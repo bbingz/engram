@@ -8,7 +8,7 @@ enum WebUIRoutes {
     static func mount<Context: RequestContext>(on router: Router<Context>, tailscaleServeIdentity: Bool = false) {
         let page = tailscaleServeIdentity ? identityHTML : html
         router.get("/web") { _, _ in asset("text/html; charset=utf-8", page) }
-        router.get("/web/app.js") { _, _ in asset("text/javascript; charset=utf-8", javascript) }
+        router.get("/web/app.js") { _, _ in asset("text/javascript; charset=utf-8", WebUILocalization.javascript + "\n" + javascript) }
         router.get("/web/app.css") { _, _ in asset("text/css; charset=utf-8", css) }
     }
 
@@ -28,7 +28,7 @@ enum WebUIRoutes {
 
     static let html = """
         <!DOCTYPE html>
-        <html lang="en">
+        <html lang="zh-CN">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -37,413 +37,420 @@ enum WebUIRoutes {
         </head>
         <body>
         <header class="top-nav">
+        <div class="header-row">
         <h1>Engram</h1>
-        <p id="lede" class="lede">Browse your session library.</p>
-        <nav id="page-nav" class="page-nav" aria-label="Main navigation" hidden>
-        <a id="nav-sessions" href="#sessions" aria-current="page">Sessions</a>
-        <a id="nav-search" href="#search">Search</a>
-        <a id="nav-insights" href="#/insights">Insights</a>
-        <a id="nav-dashboard" href="#dashboard">Dashboard</a>
-        <a id="nav-stats" href="#stats">Stats</a>
-        <a id="nav-health" href="#health">Health</a>
-        <a id="nav-fleet" href="#/fleet">Machines</a>
-        <a id="nav-settings" href="#settings">Settings</a>
+        <p id="lede" class="lede" data-i18n="Browse your session library.">浏览你的会话库。</p>
+        <nav id="page-nav" class="page-nav" aria-label="主导航" data-i18n-aria-label="Main navigation" hidden>
+        <a id="nav-sessions" href="#sessions" aria-current="page" data-i18n="Sessions">会话</a>
+        <a id="nav-search" href="#search" data-i18n="Search">搜索</a>
+        <a id="nav-insights" href="#/insights" data-i18n="Insights">洞察</a>
+        <a id="nav-dashboard" href="#dashboard" data-i18n="Dashboard">仪表盘</a>
+        <a id="nav-stats" href="#stats" data-i18n="Stats">统计</a>
+        <a id="nav-health" href="#health" data-i18n="Health">健康状况</a>
+        <a id="nav-fleet" href="#/fleet" data-i18n="Machines">机器</a>
+        <a id="nav-settings" href="#settings" data-i18n="Settings">设置</a>
         </nav>
         <form id="login">
-        <label>Credential <input id="credential" name="credential" type="password" autocomplete="current-password"></label>
-        <button type="submit">Log in</button>
+        <label><span data-i18n="Credential">凭据</span> <input id="credential" name="credential" type="password" autocomplete="current-password"></label>
+        <button type="submit" data-i18n="Log in">登录</button>
         </form>
-        <button id="logout" type="button" hidden>Log out</button>
-        <button id="command-trigger" type="button" aria-haspopup="dialog" aria-controls="command-dialog" title="Commands (Cmd/Ctrl+K)" hidden>Commands <kbd>⌘/Ctrl K</kbd></button>
-        <button id="shortcuts-help" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" hidden>?</button>
-        <p id="identity-status" class="meta" role="status"></p>
+        <div class="header-tools">
+        <button id="command-trigger" type="button" aria-label="搜索页面和已加载会话" data-i18n-aria-label="Search pages and sessions" aria-haspopup="dialog" aria-controls="command-dialog" title="命令（Cmd/Ctrl+K）" data-i18n-title="Commands (Cmd/Ctrl+K)" hidden><span class="command-trigger-label" data-i18n="Commands">命令</span> <kbd>⌘ K</kbd></button>
+        <label class="language-picker"><span class="visually-hidden" data-i18n="Interface language">界面语言</span><select id="ui-language"><option value="zh-CN" lang="zh-CN">简体中文</option><option value="en" lang="en">English</option></select></label>
+        <button id="shortcuts-help" type="button" aria-label="键盘快捷键" data-i18n-aria-label="Keyboard shortcuts" title="键盘快捷键（?）" data-i18n-title="Keyboard shortcuts (?)" hidden>?</button>
+        <button id="logout" type="button" hidden data-i18n="Log out">退出登录</button>
+        </div></div>
+        <div class="header-feedback">
+        <p id="identity-status" class="meta visually-hidden" role="status"></p>
         <p id="status" role="status"></p>
+        <p id="language-status" role="status"></p>
+        </div>
         </header>
         <section id="signed-out" class="sign-in-card" aria-labelledby="sign-in-heading">
-        <h2 id="sign-in-heading">Your session library, in one place</h2>
-        <p>Sign in to browse your session library.</p><p class="meta">Read captured conversations, search your work and review source activity.</p></section>
+        <h2 id="sign-in-heading" data-i18n="Your session library, in one place">你的会话库，汇聚一处</h2>
+        <p data-i18n="Sign in to browse your session library.">登录以浏览你的会话库。</p><p class="meta" data-i18n="Read captured conversations, search your work and review source activity.">阅读已采集的对话，搜索工作记录，查看来源活动。</p></section>
         <dialog id="shortcuts-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
-        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
-        <p>Cmd/Ctrl+K — commands (or use the Commands button). Pages and loaded sessions only; no global search.</p>
-        <p>/ — focus search (find in a transcript) · j/k — select session · Enter — open selected session</p>
-        <p>Esc — close help, find or filters, then return to list · ? — show this help</p>
-        <p>In transcript find: Enter / Shift+Enter — next / previous. Searches only the loaded message model; Search further loads up to 5 pages.</p>
-        <button id="shortcuts-close" type="button">Close help</button></dialog>
+        <h2 id="shortcuts-title" data-i18n="Keyboard shortcuts">键盘快捷键</h2>
+        <p data-i18n="Cmd/Ctrl+K — commands (or use the Commands button). Pages and loaded sessions only; no global search.">Cmd/Ctrl+K — 命令（或使用“命令”按钮）。仅限页面和已加载会话；不提供全局搜索。</p>
+        <p data-i18n="/ — focus search (find in a transcript) · j/k — select session · Enter — open selected session">/ — 聚焦搜索（在对话记录中查找） · j/k — 选择会话 · Enter — 打开所选会话</p>
+        <p data-i18n="Esc — close help, find or filters, then return to list · ? — show this help">Esc — 关闭帮助、查找或筛选，然后返回列表 · ? — 显示此帮助</p>
+        <p data-i18n="In transcript find: Enter / Shift+Enter — next / previous. Searches only the loaded message model; Search further loads up to 5 pages.">对话记录内查找：Enter / Shift+Enter — 下一处 / 上一处。仅搜索已加载的消息模型；“继续搜索”最多加载 5 页。</p>
+        <button id="shortcuts-close" type="button" data-i18n="Close help">关闭帮助</button></dialog>
         <dialog id="command-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="command-title" tabindex="-1">
-        <h2 id="command-title">Commands</h2>
-        <label for="command-query" class="visually-hidden">Find a command or loaded session</label>
-        <input id="command-query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-results" aria-describedby="command-scope command-status" autocomplete="off" maxlength="120" placeholder="Page, loaded session or action…">
+        <h2 id="command-title" data-i18n="Commands">命令</h2>
+        <label for="command-query" class="visually-hidden" data-i18n="Find a command or loaded session">查找命令或已加载会话</label>
+        <input id="command-query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="command-results" aria-describedby="command-scope command-status" autocomplete="off" maxlength="120" placeholder="页面、已加载会话或操作…" data-i18n-placeholder="Page, loaded session or action…">
         <p id="command-scope" class="meta"></p>
-        <div id="command-results" role="listbox" aria-label="Commands"></div>
+        <div id="command-results" role="listbox" aria-label="命令" data-i18n-aria-label="Commands"></div>
         <p id="command-status" class="meta" role="status" aria-live="polite"></p>
-        <div class="command-footer"><span class="meta">↑ ↓ select · Enter run · Esc close</span><button id="command-close" type="button">Close commands</button></div>
+        <div class="command-footer"><span class="meta" data-i18n="↑ ↓ select · Enter run · Esc close">↑ ↓ 选择 · Enter 执行 · Esc 关闭</span><button id="command-close" type="button" data-i18n="Close commands">关闭命令面板</button></div>
         </dialog>
         <main id="workspace" hidden>
         <section id="library-page">
         <aside class="list-pane">
         <section id="overview"></section>
         <form id="search">
-        <label id="search-query"><span class="visually-hidden">Search</span> <input id="query" name="query" type="search" placeholder="Keywords"></label>
+        <label id="search-query"><span class="visually-hidden" data-i18n="Search">搜索</span> <input id="query" name="query" type="search" placeholder="关键词" data-i18n-placeholder="Keywords"></label>
         <details id="source-picker" class="facet-picker">
-        <summary id="source-summary">All sources</summary>
+        <summary id="source-summary" data-i18n="All sources">所有来源</summary>
         <div class="facet-menu">
         <p id="source-status" role="status"></p>
         <div id="source-options" class="facet-options"></div>
-        <button id="source-more" type="button" hidden>More sources</button>
-        <button id="source-clear" type="button">Clear sources</button>
+        <button id="source-more" type="button" hidden data-i18n="More sources">更多来源</button>
+        <button id="source-clear" type="button" data-i18n="Clear sources">清除来源选择</button>
         </div>
         </details>
         <details id="project-picker" class="facet-picker">
-        <summary id="project-summary">All projects</summary>
+        <summary id="project-summary" data-i18n="All projects">所有项目</summary>
         <div class="facet-menu">
         <div class="facet-search">
-        <label for="project-query" class="visually-hidden">Search projects</label>
-        <input id="project-query" type="search" placeholder="Search projects…" maxlength="1024">
-        <button id="project-find" type="button">Find</button>
+        <label for="project-query" class="visually-hidden" data-i18n="Search projects">搜索项目</label>
+        <input id="project-query" type="search" placeholder="搜索项目…" data-i18n-placeholder="Search projects…" maxlength="1024">
+        <button id="project-find" type="button" data-i18n="Find">查找</button>
         </div>
         <p id="project-status" role="status"></p>
         <div id="project-options" class="facet-options"></div>
-        <button id="project-more" type="button" hidden>More projects</button>
-        <button id="project-clear" type="button">Clear projects</button>
+        <button id="project-more" type="button" hidden data-i18n="More projects">更多项目</button>
+        <button id="project-clear" type="button" data-i18n="Clear projects">清除项目选择</button>
         </div>
         </details>
         <details class="advanced-filters">
-        <summary>Advanced filters</summary>
-        <label>Session order <select id="session-sort"><option value="started">Started (newest first)</option><option value="lastActivity">Last activity (newest first)</option></select></label>
-        <label>Since <input id="since" name="since" type="date"></label>
-        <label>Until <input id="until" name="until" type="date"></label>
-        <label class="tool-filter"><input id="hide-tools" type="checkbox"> Hide tool-only sessions</label>
-        <label>Machine ID <input id="machineId" name="machineId" placeholder="Machine ID"></label>
+        <summary data-i18n="Advanced filters">高级筛选</summary>
+        <label><span data-i18n="Session order">会话排序</span> <select id="session-sort"><option value="started" data-i18n="Started (newest first)">开始时间（最新优先）</option><option value="lastActivity" data-i18n="Last activity (newest first)">最近活动（最新优先）</option></select></label>
+        <label><span data-i18n="Since">起始时间</span> <input id="since" name="since" type="date"></label>
+        <label><span data-i18n="Until">截止时间</span> <input id="until" name="until" type="date"></label>
+        <label class="tool-filter"><input id="hide-tools" type="checkbox"> <span data-i18n="Hide tool-only sessions">隐藏仅含工具的会话</span></label>
+        <label><span data-i18n="Machine ID">机器 ID</span> <input id="machineId" name="machineId" placeholder="机器 ID" data-i18n-placeholder="Machine ID"></label>
         </details>
-        <button type="submit">Search</button>
+        <button type="submit" data-i18n="Search">搜索</button>
         </form>
         <section id="search-options" hidden>
         <div class="search-mode-controls">
-        <label>Search mode <select id="search-mode"><option id="mode-keyword" value="keyword">Keyword</option><option id="mode-semantic" value="semantic" disabled>Semantic</option><option id="mode-hybrid" value="hybrid" disabled>Hybrid</option></select></label>
-        <label>Results <select id="search-limit"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
+        <label><span data-i18n="Search mode">搜索模式</span> <select id="search-mode"><option id="mode-keyword" value="keyword" data-i18n="Keyword">关键词</option><option id="mode-semantic" value="semantic" disabled data-i18n="Semantic">语义</option><option id="mode-hybrid" value="hybrid" disabled data-i18n="Hybrid">混合</option></select></label>
+        <label><span data-i18n="Results">结果</span> <select id="search-limit"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option></select></label>
         </div>
-        <details id="search-capability-details" class="search-secondary"><summary id="search-capability-summary">Search availability &amp; index</summary><p id="search-capabilities" role="status"></p></details>
+        <details id="search-capability-details" class="search-secondary"><summary id="search-capability-summary" data-i18n="Search availability &amp; index">搜索可用性与索引</summary><p id="search-capabilities" role="status"></p></details>
         <p id="search-result-status" role="status"></p>
-        <button id="search-more" type="button" hidden>Load more search results</button>
+        <button id="search-more" type="button" hidden data-i18n="Load more search results">加载更多搜索结果</button>
         <details id="insight-compose" class="search-secondary">
-        <summary>Save an insight</summary>
+        <summary data-i18n="Save an insight">保存一条洞察</summary>
         <p id="insight-write-status" role="status"></p>
         <form id="insight-save-form" hidden>
-        <label>Insight <textarea id="insight-content-input" rows="6" maxlength="50000" placeholder="A lesson or note to find again…" required></textarea></label>
+        <label><span data-i18n="Insight">洞察</span> <textarea id="insight-content-input" rows="6" maxlength="50000" placeholder="记录一条经验或笔记，以便日后查找…" data-i18n-placeholder="A lesson or note to find again…" required></textarea></label>
         <div class="search-mode-controls">
-        <label>Category <input id="insight-wing-input" maxlength="200" placeholder="Optional"></label>
-        <label>Topic <input id="insight-room-input" maxlength="200" placeholder="Optional"></label>
-        <label>Importance <select id="insight-importance-input"><option value="5">5 — High</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option><option value="0">0 — Low</option></select></label>
+        <label><span data-i18n="Category">类别</span> <input id="insight-wing-input" maxlength="200" placeholder="可选" data-i18n-placeholder="Optional"></label>
+        <label><span data-i18n="Topic">主题</span> <input id="insight-room-input" maxlength="200" placeholder="可选" data-i18n-placeholder="Optional"></label>
+        <label><span data-i18n="Importance">重要程度</span> <select id="insight-importance-input"><option value="5" data-i18n="5 — High">5 — 高</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option><option value="0" data-i18n="0 — Low">0 — 低</option></select></label>
         </div>
-        <label>Source session ID <input id="insight-source-input" maxlength="4096" placeholder="Optional; leave blank for a library note"></label>
-        <button id="insight-save-button" type="submit">Save insight</button>
+        <label><span data-i18n="Source session ID">来源会话 ID</span> <input id="insight-source-input" maxlength="4096" placeholder="可选；留空则保存为会话库笔记" data-i18n-placeholder="Optional; leave blank for a library note"></label>
+        <button id="insight-save-button" type="submit" data-i18n="Save insight">保存洞察</button>
         </form>
-        <button id="insight-saved-read" type="button" hidden>Read saved insight</button>
+        <button id="insight-saved-read" type="button" hidden data-i18n="Read saved insight">阅读已保存的洞察</button>
         </details>
         </section>
-        <div id="active-filters" class="active-filters" aria-label="Active filters" hidden></div>
+        <div id="active-filters" class="active-filters" aria-label="当前筛选条件" data-i18n-aria-label="Active filters" hidden></div>
         <div class="list-toolbar">
-        <div class="agent-filters segmented" role="group" aria-label="Agent sessions">
-        <button id="agents-hide" type="button" aria-pressed="true">Hide Agents</button>
-        <button id="agents-all" type="button" aria-pressed="false">All</button>
-        <button id="agents-only" type="button" aria-pressed="false">Agents Only</button>
+        <div class="agent-filters segmented" role="group" aria-label="智能体会话" data-i18n-aria-label="Agent sessions">
+        <button id="agents-hide" type="button" aria-pressed="true" data-i18n="Hide Agents">隐藏智能体</button>
+        <button id="agents-all" type="button" aria-pressed="false" data-i18n="All">全部</button>
+        <button id="agents-only" type="button" aria-pressed="false" data-i18n="Agents Only">仅智能体</button>
         </div>
         <form id="session-jump" class="session-jump">
-        <label for="session-id" class="visually-hidden">Session ID</label>
-        <input id="session-id" name="sessionId" placeholder="Session ID…" maxlength="4096" autocomplete="off">
-        <button type="submit">Go to session</button>
+        <label for="session-id" class="visually-hidden" data-i18n="Session ID">会话 ID</label>
+        <input id="session-id" name="sessionId" placeholder="会话 ID…" data-i18n-placeholder="Session ID…" maxlength="4096" autocomplete="off">
+        <button type="submit" data-i18n="Go to session">前往会话</button>
         </form>
         </div>
-        <section id="insight-results" hidden><h2>Insights across your library</h2><div id="insight-rows"></div></section>
+        <section id="insight-results" hidden><h2 data-i18n="Insights across your library">整个会话库的洞察</h2><div id="insight-rows"></div></section>
         <section id="sessions"></section>
-        <div class="session-pagination" aria-label="Session pages">
-        <button id="session-previous" type="button" hidden>Previous</button>
+        <div class="session-pagination" aria-label="会话页面" data-i18n-aria-label="Session pages">
+        <button id="session-previous" type="button" hidden data-i18n="Previous">上一项</button>
         <span id="session-page-status" role="status"></span>
-        <button id="more" type="button" hidden>Next</button>
+        <button id="more" type="button" hidden data-i18n="Next">下一项</button>
         </div>
         </aside>
         <section class="detail-pane">
-        <button id="back" type="button" hidden>Sessions</button>
+        <button id="back" type="button" hidden data-i18n="Sessions">会话</button>
         <div id="detail-header"><section id="detail"></section>
-        <nav id="detail-view-nav" class="agent-filters" aria-label="Session views" hidden>
-        <button id="detail-view-transcript" type="button" aria-pressed="true">Transcript</button>
-        <button id="detail-view-timeline" type="button" aria-pressed="false">Timeline</button>
-        <button id="detail-view-children" type="button" aria-pressed="false">Child sessions</button>
-        <button id="detail-view-info" type="button" aria-pressed="false">Info</button>
+        <nav id="detail-view-nav" class="agent-filters" aria-label="会话视图" data-i18n-aria-label="Session views" hidden>
+        <button id="detail-view-transcript" type="button" aria-pressed="true" data-i18n="Transcript">对话记录</button>
+        <button id="detail-view-timeline" type="button" aria-pressed="false" data-i18n="Timeline">时间线</button>
+        <button id="detail-view-children" type="button" aria-pressed="false" data-i18n="Child sessions">子会话</button>
+        <button id="detail-view-info" type="button" aria-pressed="false" data-i18n="Info">信息</button>
         </nav>
         <form id="transcript-find" class="agent-filters" hidden>
-        <label>Find in loaded messages <input id="transcript-find-query" type="search" maxlength="500" autocomplete="off"></label>
-        <button type="submit">Next</button><button id="transcript-find-prev" type="button">Previous</button>
-        <button id="transcript-find-more" type="button">Search further (up to 5 pages)</button>
-        <button id="transcript-find-close" type="button">Close find</button>
+        <label><span data-i18n="Find in loaded messages">在已加载消息中查找</span> <input id="transcript-find-query" type="search" maxlength="500" autocomplete="off"></label>
+        <button type="submit" data-i18n="Next">下一项</button><button id="transcript-find-prev" type="button" data-i18n="Previous">上一项</button>
+        <button id="transcript-find-more" type="button" data-i18n="Search further (up to 5 pages)">继续搜索（最多 5 页）</button>
+        <button id="transcript-find-close" type="button" data-i18n="Close find">关闭查找</button>
         <p id="transcript-find-status" role="status" aria-live="polite"></p><p id="transcript-find-preview" class="find-preview"></p>
         </form>
         </div>
         <section id="detail-info-panel" hidden><div id="detail-info-content"></div>
-        <section id="session-summary" class="settings-section" hidden><h3>Summary</h3><div id="session-summary-text"></div></section>
+        <section id="session-summary" class="settings-section" hidden><h3 data-i18n="Summary">摘要</h3><div id="session-summary-text"></div></section>
         <details id="session-actions" class="advanced-filters" hidden>
-        <summary>Generate summary or title</summary>
+        <summary data-i18n="Generate summary or title">生成摘要或标题</summary>
         <p id="session-action-status" role="status"></p>
-        <div class="search-mode-controls"><button id="session-generate-summary" type="button" disabled>Generate summary</button><button id="session-generate-title" type="button" disabled>Generate title</button></div>
+        <div class="search-mode-controls"><button id="session-generate-summary" type="button" disabled data-i18n="Generate summary">生成摘要</button><button id="session-generate-title" type="button" disabled data-i18n="Generate title">生成标题</button></div>
         </details>
         </section>
         <section id="transcript-panel">
         <div id="transcript-toolbar">
-        <div id="transcript-filters" class="agent-filters" role="group" aria-label="Message types in loaded messages"></div>
-        <p class="meta">Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.</p>
+        <div id="transcript-filters" class="agent-filters" role="group" aria-label="已加载消息的类型" data-i18n-aria-label="Message types in loaded messages"></div>
+        <p class="meta" data-i18n="Counts cover loaded messages; Tools counts call/result cards. Categories can overlap.">计数仅覆盖已加载的消息；“工具”统计调用/结果卡片。各类别可能重叠。</p>
         <div class="agent-filters"><span id="transcript-loaded" role="status"></span>
-        <button id="transcript-find-toggle" type="button" aria-controls="transcript-find" aria-expanded="false">Find in loaded</button>
-        <button id="transcript-minimap-toggle" type="button" aria-controls="transcript-minimap-box" aria-expanded="false">Minimap</button>
-        <button id="transcript-outline-toggle" type="button" aria-controls="transcript-outline-box" aria-expanded="false">Outline</button>
-        <button id="transcript-load-all" type="button">Load all</button>
-        <button id="transcript-end" type="button">Jump to end</button>
-        <button id="transcript-copy-id" type="button">Copy session ID</button>
-        <button id="transcript-copy" type="button">Copy loaded Markdown</button>
-        <button id="transcript-previous" type="button">↑ Previous</button><button id="transcript-next" type="button">↓ Next</button></div>
+        <button id="transcript-find-toggle" type="button" aria-controls="transcript-find" aria-expanded="false" data-i18n="Find in loaded">在已加载内容中查找</button>
+        <button id="transcript-minimap-toggle" type="button" aria-controls="transcript-minimap-box" aria-expanded="false" data-i18n="Minimap">概览图</button>
+        <button id="transcript-outline-toggle" type="button" aria-controls="transcript-outline-box" aria-expanded="false" data-i18n="Outline">大纲</button>
+        <button id="transcript-load-all" type="button" data-i18n="Load all">加载全部</button>
+        <button id="transcript-end" type="button" data-i18n="Jump to end">跳转到末尾</button>
+        <button id="transcript-copy-id" type="button" data-i18n="Copy session ID">复制会话 ID</button>
+        <button id="transcript-copy" type="button" data-i18n="Copy loaded Markdown">复制已加载的 Markdown</button>
+        <button id="transcript-previous" type="button" data-i18n="↑ Previous">↑ 上一处</button><button id="transcript-next" type="button" data-i18n="↓ Next">↓ 下一处</button></div>
         </div>
-        <section id="transcript-minimap-box" aria-label="Transcript minimap" hidden>
+        <section id="transcript-minimap-box" aria-label="对话记录概览图" data-i18n-aria-label="Transcript minimap" hidden>
         <p id="transcript-minimap-status" role="status"></p>
-        <p class="meta">Ordinal coverage: solid = loaded · dashed = partial · hollow = not loaded. Ring = selected jump · underline = viewport. Arrow keys/Home/End move focus; Enter jumps.</p>
-        <nav id="transcript-minimap" aria-label="Ordinal ranges"></nav>
+        <p class="meta" data-i18n="Ordinal coverage: solid = loaded · dashed = partial · hollow = not loaded. Ring = selected jump · underline = viewport. Arrow keys/Home/End move focus; Enter jumps.">序号覆盖范围：实心 = 已加载 · 虚线 = 部分加载 · 空心 = 未加载。圆环 = 已选跳转目标 · 下划线 = 可视区域。方向键/Home/End 移动焦点；Enter 跳转。</p>
+        <nav id="transcript-minimap" aria-label="序号范围" data-i18n-aria-label="Ordinal ranges"></nav>
         <p id="transcript-minimap-position" role="status"></p>
-        <button id="transcript-minimap-more" type="button">Load map timeline (optional)</button>
+        <button id="transcript-minimap-more" type="button" data-i18n="Load map timeline (optional)">加载概览图时间线（可选）</button>
         </section>
-        <details id="transcript-outline-box" hidden><summary>Prompt outline · loaded coverage</summary>
-        <p id="transcript-outline-status" role="status"></p><nav id="transcript-outline" aria-label="Prompt outline"></nav>
-        <button id="transcript-outline-more" type="button" hidden>More outline entries</button></details>
+        <details id="transcript-outline-box" hidden><summary data-i18n="Prompt outline · loaded coverage">提示词大纲 · 已加载的覆盖范围</summary>
+        <p id="transcript-outline-status" role="status"></p><nav id="transcript-outline" aria-label="提示词大纲" data-i18n-aria-label="Prompt outline"></nav>
+        <button id="transcript-outline-more" type="button" hidden data-i18n="More outline entries">更多大纲条目</button></details>
         <section id="messages"></section>
-        <button id="more-messages" type="button" hidden>Load more messages</button>
+        <button id="more-messages" type="button" hidden data-i18n="Load more messages">加载更多消息</button>
         </section>
         <section id="timeline-panel" hidden>
-        <div class="page-heading"><h3>Timeline</h3><button id="timeline-refresh" type="button">Refresh</button></div>
+        <div class="page-heading"><h3 data-i18n="Timeline">时间线</h3><button id="timeline-refresh" type="button" data-i18n="Refresh">刷新</button></div>
         <p id="timeline-status" role="status"></p><div id="timeline-rows"></div>
-        <button id="timeline-more" type="button" hidden>Load more events</button>
+        <button id="timeline-more" type="button" hidden data-i18n="Load more events">加载更多事件</button>
         </section>
         <section id="detail-children-panel" hidden>
-        <div class="page-heading"><h3>Child sessions</h3><button id="detail-children-refresh" type="button">Refresh</button></div>
-        <button id="relationship-edit" type="button">Edit relationships</button>
+        <div class="page-heading"><h3 data-i18n="Child sessions">子会话</h3><button id="detail-children-refresh" type="button" data-i18n="Refresh">刷新</button></div>
+        <button id="relationship-edit" type="button" data-i18n="Edit relationships">编辑关联关系</button>
         <p id="relationship-access" role="status"></p>
         <form id="relationship-form" class="stats-filters" hidden>
-        <label>Child session ID <input id="relationship-child-id" required maxlength="4096" autocomplete="off" placeholder="Session to link to this parent"></label>
-        <button id="relationship-add" type="submit">Link child</button>
+        <label><span data-i18n="Child session ID">子会话 ID</span> <input id="relationship-child-id" required maxlength="4096" autocomplete="off" placeholder="要关联到此父会话的会话" data-i18n-placeholder="Session to link to this parent"></label>
+        <button id="relationship-add" type="submit" data-i18n="Link child">关联子会话</button>
         </form>
         <p id="relationship-status" role="status"></p>
         <p id="detail-children-status" role="status"></p><div id="detail-children-rows"></div>
-        <button id="detail-children-more" type="button" hidden>Load more child sessions</button>
+        <button id="detail-children-more" type="button" hidden data-i18n="Load more child sessions">加载更多子会话</button>
         </section>
         </section>
         </section>
         <section id="insights-page" hidden>
-        <div class="page-heading"><h2>Insights</h2><button id="insights-refresh" type="button">Refresh insights</button></div>
-        <p class="meta">Active library notes: global notes and notes linked to currently admitted sessions. Agent sessions are excluded. Previews are redacted and limited to 600 characters.</p>
+        <div class="page-heading"><h2 data-i18n="Insights">洞察</h2><button id="insights-refresh" type="button" data-i18n="Refresh insights">刷新洞察</button></div>
+        <p class="meta" data-i18n="Active library notes: global notes and notes linked to currently admitted sessions. Agent sessions are excluded. Previews are redacted and limited to 600 characters.">会话库中的有效笔记：全局笔记及关联到当前获准纳入的会话的笔记。不含智能体会话。预览已脱敏，最多显示 600 个字符。</p>
         <p id="insights-status" role="status" aria-live="polite"></p>
         <div id="insights-rows"></div>
-        <button id="insights-more" type="button" hidden>Load more insights</button>
+        <button id="insights-more" type="button" hidden data-i18n="Load more insights">加载更多洞察</button>
         </section>
         <section id="fleet-page" hidden aria-labelledby="fleet-heading">
-        <div class="page-heading"><h2 id="fleet-heading">Fleet dashboard</h2><button id="fleet-refresh" type="button">Refresh machines</button></div>
-        <p class="meta">Sampled telemetry, not a service-health verdict. Refreshes every 30 seconds while open; an empty upload queue does not prove capture completeness.</p>
+        <div class="page-heading"><h2 id="fleet-heading" data-i18n="Fleet dashboard">机群仪表盘</h2><button id="fleet-refresh" type="button" data-i18n="Refresh machines">刷新机器</button></div>
+        <p class="meta" data-i18n="Sampled telemetry, not a service-health verdict. Refreshes every 30 seconds while open; an empty upload queue does not prove capture completeness.">这是采样遥测数据，并非服务健康状况的判定。页面打开时每 30 秒刷新一次；上传队列为空并不能证明采集完整。</p>
         <p id="fleet-status" role="status" aria-live="polite"></p>
         <dl id="fleet-summary" class="fleet-summary"></dl>
         <div id="fleet-content"></div>
-        <p class="health-note">Files, capture generations, ingest tasks, and logical sessions are different units. Cooling files stay dirty until their re-capture window ends. Privacy-withheld files are not upload failures. Tracked-file counts exclude unsupported or untracked files. Session counts are database totals; Web source-admission rules may reduce browse results. Parsed skip-tier sessions and historical quarantine outcomes are not a search backlog.</p>
+        <p class="health-note" data-i18n="Files, capture generations, ingest tasks, and logical sessions are different units. Cooling files stay dirty until their re-capture window ends. Privacy-withheld files are not upload failures. Tracked-file counts exclude unsupported or untracked files. Session counts are database totals; Web source-admission rules may reduce browse results. Parsed skip-tier sessions and historical quarantine outcomes are not a search backlog.">文件、采集代次、接收处理任务和逻辑会话是不同的计量单位。冷却中的文件在重新采集窗口结束前仍处于待重新采集状态。因隐私而暂不上传的文件不属于上传失败。已跟踪文件计数不含不支持或未跟踪的文件。会话计数是数据库中的总数；Web 的来源准入规则可能减少可浏览的结果。已解析的 skip 层级会话和历史隔离结果不属于搜索待处理积压。</p>
         </section>
         <section id="health-page" hidden>
-        <div class="page-heading"><h2>Health</h2><button id="health-refresh" type="button">Refresh</button></div>
-        <p>Heartbeat shows collector liveness, not capture activity. A live collector may have no new conversations to capture.</p>
+        <div class="page-heading"><h2 data-i18n="Health">健康状况</h2><button id="health-refresh" type="button" data-i18n="Refresh">刷新</button></div>
+        <p data-i18n="Heartbeat shows collector liveness, not capture activity. A live collector may have no new conversations to capture.">心跳显示采集器的存活状态，而非采集活动。存活的采集器也可能没有新对话可采集。</p>
         <p id="health-status" role="status"></p>
         <p id="health-summary" class="health-summary"></p>
         <div id="health-content" class="health-grid"></div>
         </section>
         <section id="settings-page" hidden>
-        <div class="page-heading"><h2>Settings</h2><button id="settings-refresh" type="button">Refresh</button></div>
-        <p class="meta">Server configuration and captured-library metadata. Values come from this deployment, not the device running your browser.</p>
+        <div class="page-heading"><h2 data-i18n="Settings">设置</h2><button id="settings-refresh" type="button" data-i18n="Refresh">刷新</button></div>
+        <p class="meta" data-i18n="Server configuration and captured-library metadata. Values come from this deployment, not the device running your browser.">服务器配置与已采集会话库的元数据。数值来自此部署，而非运行浏览器的设备。</p>
         <p id="settings-access" role="status"></p>
         <p id="settings-status" role="status"></p>
         <div id="settings-content"></div>
-        <button id="settings-more" type="button" hidden>More project aliases</button>
-        <h3 class="settings-heading">Configuration &amp; actions</h3>
+        <button id="settings-more" type="button" hidden data-i18n="More project aliases">更多项目别名</button>
+        <h3 class="settings-heading" data-i18n="Configuration &amp; actions">配置与操作</h3>
         <details id="ai-config" class="settings-section">
-        <summary>AI settings</summary>
-        <p>Configure summaries, titles, semantic search and call history. API keys are managed on the server.</p>
-        <p>Environment overrides can take precedence. Changing the embedding model or dimensions does not rebuild stored vectors.</p>
+        <summary data-i18n="AI settings">AI 设置</summary>
+        <p data-i18n="Configure summaries, titles, semantic search and call history. API keys are managed on the server.">配置摘要、标题、语义搜索和调用历史。API 密钥由服务器管理。</p>
+        <p data-i18n="Environment overrides can take precedence. Changing the embedding model or dimensions does not rebuild stored vectors.">环境覆盖设置可能优先生效。更改嵌入模型或维度不会重建已存储的向量。</p>
         <form id="ai-config-form">
-        <fieldset class="ai-config-group"><legend>Summaries</legend>
-        <label>Protocol<select id="ai-config-aiProtocol"><option value="openai">openai</option><option value="disabled">disabled</option></select></label>
-        <label>API base URL<input id="ai-config-aiBaseURL" maxlength="2048"></label>
-        <label>Model<input id="ai-config-aiModel" maxlength="256"></label>
-        <label>Language<input id="ai-config-summaryLanguage" maxlength="64"></label>
-        <label>Maximum sentences<input id="ai-config-summaryMaxSentences" type="number" required min="1" max="20" step="1"></label>
-        <label>Style<input id="ai-config-summaryStyle" maxlength="512"></label>
-        <label>Custom prompt<textarea id="ai-config-summaryPrompt" rows="3" maxlength="8000"></textarea></label>
-        <label>Maximum output tokens<input id="ai-config-summaryMaxTokens" type="number" required min="1" max="32768" step="1"></label>
-        <label>Temperature<input id="ai-config-summaryTemperature" type="number" required min="0" max="2" step="0.1"></label>
-        <label>First messages<input id="ai-config-summarySampleFirst" type="number" required min="0" max="200" step="1"></label>
-        <label>Last messages<input id="ai-config-summarySampleLast" type="number" required min="0" max="200" step="1"></label>
-        <label>Characters per message<input id="ai-config-summaryTruncateChars" type="number" required min="1" max="10000" step="1"></label>
+        <fieldset class="ai-config-group"><legend data-i18n="Summaries">摘要</legend>
+        <label><span data-i18n="Protocol">协议</span><select id="ai-config-aiProtocol"><option value="openai">openai</option><option value="disabled" data-i18n="disabled">已停用</option></select></label>
+        <label><span data-i18n="API base URL">API 基础 URL</span><input id="ai-config-aiBaseURL" maxlength="2048"></label>
+        <label><span data-i18n="Model">模型</span><input id="ai-config-aiModel" maxlength="256"></label>
+        <label><span data-i18n="Language">语言</span><input id="ai-config-summaryLanguage" maxlength="64"></label>
+        <label><span data-i18n="Maximum sentences">最大句子数</span><input id="ai-config-summaryMaxSentences" type="number" required min="1" max="20" step="1"></label>
+        <label><span data-i18n="Style">风格</span><input id="ai-config-summaryStyle" maxlength="512"></label>
+        <label><span data-i18n="Custom prompt">自定义提示词</span><textarea id="ai-config-summaryPrompt" rows="3" maxlength="8000"></textarea></label>
+        <label><span data-i18n="Maximum output tokens">最大输出 token 数</span><input id="ai-config-summaryMaxTokens" type="number" required min="1" max="32768" step="1"></label>
+        <label><span data-i18n="Temperature">温度</span><input id="ai-config-summaryTemperature" type="number" required min="0" max="2" step="0.1"></label>
+        <label><span data-i18n="First messages">开头消息</span><input id="ai-config-summarySampleFirst" type="number" required min="0" max="200" step="1"></label>
+        <label><span data-i18n="Last messages">末尾消息</span><input id="ai-config-summarySampleLast" type="number" required min="0" max="200" step="1"></label>
+        <label><span data-i18n="Characters per message">每条消息的字符数</span><input id="ai-config-summaryTruncateChars" type="number" required min="1" max="10000" step="1"></label>
         </fieldset>
-        <fieldset class="ai-config-group"><legend>Titles</legend>
-        <label>Provider<select id="ai-config-titleProvider"><option value="ollama">ollama</option><option value="custom">custom</option><option value="openai">openai</option></select></label>
-        <label>API base URL<input id="ai-config-titleBaseUrl" maxlength="2048"></label>
-        <label>Model<input id="ai-config-titleModel" maxlength="256"></label>
+        <fieldset class="ai-config-group"><legend data-i18n="Titles">标题</legend>
+        <label><span data-i18n="Provider">提供商</span><select id="ai-config-titleProvider"><option value="ollama">ollama</option><option value="custom" data-i18n="custom">自定义</option><option value="openai">openai</option></select></label>
+        <label><span data-i18n="API base URL">API 基础 URL</span><input id="ai-config-titleBaseUrl" maxlength="2048"></label>
+        <label><span data-i18n="Model">模型</span><input id="ai-config-titleModel" maxlength="256"></label>
         </fieldset>
-        <fieldset class="ai-config-group"><legend>Semantic search</legend>
-        <label>API base URL<input id="ai-config-embeddingBaseURL" maxlength="2048"></label>
-        <label>Model<input id="ai-config-embeddingModel" maxlength="256"></label>
-        <label>Dimensions<input id="ai-config-embeddingDimension" type="number" required min="1" max="65536" step="1"></label>
-        <label>Send dimensions to provider<input id="ai-config-embeddingIncludeDimensions" type="checkbox"></label>
+        <fieldset class="ai-config-group"><legend data-i18n="Semantic search">语义搜索</legend>
+        <label><span data-i18n="API base URL">API 基础 URL</span><input id="ai-config-embeddingBaseURL" maxlength="2048"></label>
+        <label><span data-i18n="Model">模型</span><input id="ai-config-embeddingModel" maxlength="256"></label>
+        <label><span data-i18n="Dimensions">维度</span><input id="ai-config-embeddingDimension" type="number" required min="1" max="65536" step="1"></label>
+        <label><span data-i18n="Send dimensions to provider">向提供商发送维度参数</span><input id="ai-config-embeddingIncludeDimensions" type="checkbox"></label>
         </fieldset>
-        <fieldset class="ai-config-group"><legend>AI call history</legend>
-        <label>Record calls<input id="ai-config-aiAudit.enabled" type="checkbox"></label>
-        <label>Store redacted request and response bodies<input id="ai-config-aiAudit.logBodies" type="checkbox"></label>
-        <label>Maximum stored body size<input id="ai-config-aiAudit.maxBodySize" type="number" required min="1" max="1000000" step="1"></label>
+        <fieldset class="ai-config-group"><legend data-i18n="AI call history">AI 调用历史</legend>
+        <label><span data-i18n="Record calls">记录调用</span><input id="ai-config-aiAudit.enabled" type="checkbox"></label>
+        <label><span data-i18n="Store redacted request and response bodies">存储脱敏后的请求与响应正文</span><input id="ai-config-aiAudit.logBodies" type="checkbox"></label>
+        <label><span data-i18n="Maximum stored body size">最大正文存储大小</span><input id="ai-config-aiAudit.maxBodySize" type="number" required min="1" max="1000000" step="1"></label>
         </fieldset>
-        <div class="ai-config-actions"><button id="ai-config-save" type="submit" disabled>Save changes</button><button id="ai-config-reload" type="button">Reload saved settings</button></div>
+        <div class="ai-config-actions"><button id="ai-config-save" type="submit" disabled data-i18n="Save changes">保存更改</button><button id="ai-config-reload" type="button" data-i18n="Reload saved settings">重新加载已保存的设置</button></div>
         </form><p id="ai-config-status" role="status"></p>
         </details>
         <section id="batch-title-actions" class="settings-section" hidden>
-        <h3>Session titles</h3><p>Generate titles for sessions that do not yet have one, using the configured AI provider.</p>
-        <button id="batch-title-button" type="button">Generate missing titles</button><p id="batch-title-status" role="status"></p>
+        <h3 data-i18n="Session titles">会话标题</h3><p data-i18n="Generate titles for sessions that do not yet have one, using the configured AI provider.">使用已配置的 AI 提供商，为尚无标题的会话生成标题。</p>
+        <button id="batch-title-button" type="button" data-i18n="Generate missing titles">生成缺失的标题</button><p id="batch-title-status" role="status"></p>
         </section>
         <section id="source-settings" class="settings-section" hidden>
-        <h3>Source settings</h3>
-        <p>These controls change importing and session visibility on this server.</p>
-        <table aria-label="Source configuration"><thead><tr><th>Source</th><th>Status</th><th>Action</th></tr></thead><tbody id="source-settings-rows"></tbody></table>
+        <h3 data-i18n="Source settings">来源设置</h3>
+        <p data-i18n="These controls change importing and session visibility on this server.">这些控件会更改此服务器上的导入行为和会话可见性。</p>
+        <table aria-label="来源配置" data-i18n-aria-label="Source configuration"><thead><tr><th data-i18n="Source">来源</th><th data-i18n="Status">状态</th><th data-i18n="Action">操作</th></tr></thead><tbody id="source-settings-rows"></tbody></table>
         </section>
         <p id="source-settings-status" role="status"></p>
         <p id="source-write-status" role="status"></p>
         <section id="alias-editor" class="settings-section" hidden>
-        <h3>Add project alias</h3>
+        <h3 data-i18n="Add project alias">添加项目别名</h3>
         <form id="alias-project-form" class="stats-filters">
-        <label>Find destination project <input id="alias-project-query" type="search" maxlength="1000"></label>
-        <button id="alias-project-search" type="submit">Find</button>
+        <label><span data-i18n="Find destination project">查找目标项目</span> <input id="alias-project-query" type="search" maxlength="1000"></label>
+        <button id="alias-project-search" type="submit" data-i18n="Find">查找</button>
         </form>
         <p id="alias-project-status" role="status"></p>
         <form id="alias-form" class="stats-filters">
-        <label>Old name or path <input id="alias-text" required maxlength="1000" placeholder="/old/project"></label>
-        <label>Destination project <select id="alias-canonical" required></select></label>
-        <button id="alias-add" type="submit">Add alias</button>
+        <label><span data-i18n="Old name or path">旧名称或路径</span> <input id="alias-text" required maxlength="1000" placeholder="/old/project"></label>
+        <label><span data-i18n="Destination project">目标项目</span> <select id="alias-canonical" required></select></label>
+        <button id="alias-add" type="submit" data-i18n="Add alias">添加别名</button>
         </form>
-        <button id="alias-project-more" type="button" hidden>More destination projects</button>
+        <button id="alias-project-more" type="button" hidden data-i18n="More destination projects">更多目标项目</button>
         </section>
         <p id="alias-status" role="status"></p>
         </section>
         <section id="dashboard-page" hidden aria-labelledby="dashboard-heading">
-        <div class="page-heading"><h2 id="dashboard-heading">Dashboard</h2><button id="dashboard-refresh" type="button">Refresh dashboard</button></div>
-        <p class="meta">Last 30 calendar dates · agents hidden · server-local day buckets. Costs include priced usage only, not a billing statement.</p>
+        <div class="page-heading"><h2 id="dashboard-heading" data-i18n="Dashboard">仪表盘</h2><button id="dashboard-refresh" type="button" data-i18n="Refresh dashboard">刷新仪表盘</button></div>
+        <p class="meta" data-i18n="Last 30 calendar dates · agents hidden · server-local day buckets. Costs include priced usage only, not a billing statement.">最近 30 个日历日 · 已隐藏智能体 · 按服务器本地日期分桶。费用仅包含已计价用量，不代表账单。</p>
         <div id="dashboard-kpis" class="dashboard-kpis"></div>
         <div id="dashboard-activity"></div>
-        <button id="dashboard-hours-load" type="button">Load session-start heatmap</button><div id="dashboard-hours"></div>
+        <button id="dashboard-hours-load" type="button" data-i18n="Load session-start heatmap">加载会话开始热力图</button><div id="dashboard-hours"></div>
         <div class="dashboard-grid"><div id="dashboard-cost"></div><div id="dashboard-sources"></div><div id="dashboard-projects"></div></div>
         <p id="dashboard-health" class="meta"></p>
-        <p id="dashboard-dependencies" class="meta">Heatmap counts session starts, not work duration. Per-source health history is unavailable. No activity is inferred from heartbeats.</p>
+        <p id="dashboard-dependencies" class="meta" data-i18n="Heatmap counts session starts, not work duration. Per-source health history is unavailable. No activity is inferred from heartbeats.">热力图统计会话开始次数，而非工作时长。各来源的健康历史不可用。不会根据心跳推断活动。</p>
         </section>
         <section id="stats-page" hidden>
-        <div class="page-heading"><h2>Stats</h2></div>
-        <div class="agent-filters" role="group" aria-label="Statistics view"><button id="stats-view-sessions" type="button" aria-pressed="true">Sessions</button><button id="stats-view-costs" type="button" aria-pressed="false">Costs</button><button id="stats-view-tools" type="button" aria-pressed="false">Tools</button><button id="stats-view-files" type="button" aria-pressed="false">Files</button><button id="stats-view-usage" type="button" aria-pressed="false">Usage</button><button id="stats-view-repos" type="button" aria-pressed="false">Repositories</button><button id="stats-view-ai" type="button" aria-pressed="false">AI calls</button></div>
+        <div class="page-heading"><h2 data-i18n="Stats">统计</h2></div>
+        <div class="agent-filters" role="group" aria-label="统计视图" data-i18n-aria-label="Statistics view"><button id="stats-view-sessions" type="button" aria-pressed="true" data-i18n="Sessions">会话</button><button id="stats-view-costs" type="button" aria-pressed="false" data-i18n="Costs">费用</button><button id="stats-view-tools" type="button" aria-pressed="false" data-i18n="Tools">工具</button><button id="stats-view-files" type="button" aria-pressed="false" data-i18n="Files">文件</button><button id="stats-view-usage" type="button" aria-pressed="false" data-i18n="Usage">用量</button><button id="stats-view-repos" type="button" aria-pressed="false" data-i18n="Repositories">仓库</button><button id="stats-view-ai" type="button" aria-pressed="false" data-i18n="AI calls">AI 调用</button></div>
         <div id="stats-content">
         <form id="stats-form" class="stats-filters">
-        <label>Group by <select id="stats-group"><option value="source">Source</option><option value="project">Project</option><option value="day">Day</option><option value="week">Week</option><option value="hourOfWeek">Weekday / hour (session starts)</option></select></label>
-        <label>Source <select id="stats-source"><option value="">All sources</option></select></label>
-        <label>Project <select id="stats-project"><option value="">All projects</option></select></label>
-        <button id="stats-choices" type="button">Load filter choices</button><span id="stats-choices-status" class="meta" role="status"></span>
-        <label>Since <input id="stats-since" type="date"></label>
-        <label>Until <input id="stats-until" type="date"></label>
-        <label>Agents <select id="stats-agents"><option value="hide">Hide agents</option><option value="all">All</option><option value="only">Agents only</option></select></label>
-        <label><input id="stats-noise" type="checkbox"> Exclude lightweight sessions</label>
-        <button type="submit">Apply</button>
+        <label><span data-i18n="Group by">分组依据</span> <select id="stats-group"><option value="source" data-i18n="Source">来源</option><option value="project" data-i18n="Project">项目</option><option value="day" data-i18n="Day">日期</option><option value="week" data-i18n="Week">周</option><option value="hourOfWeek" data-i18n="Weekday / hour (session starts)">星期 / 小时（会话开始次数）</option></select></label>
+        <label><span data-i18n="Source">来源</span> <select id="stats-source"><option value="" data-i18n="All sources">所有来源</option></select></label>
+        <label><span data-i18n="Project">项目</span> <select id="stats-project"><option value="" data-i18n="All projects">所有项目</option></select></label>
+        <button id="stats-choices" type="button" data-i18n="Load filter choices">加载筛选选项</button><span id="stats-choices-status" class="meta" role="status"></span>
+        <label><span data-i18n="Since">起始时间</span> <input id="stats-since" type="date"></label>
+        <label><span data-i18n="Until">截止时间</span> <input id="stats-until" type="date"></label>
+        <label><span data-i18n="Agents">智能体</span> <select id="stats-agents"><option value="hide" data-i18n="Hide agents">隐藏智能体</option><option value="all" data-i18n="All">全部</option><option value="only" data-i18n="Agents only">仅智能体</option></select></label>
+        <label><input id="stats-noise" type="checkbox"> <span data-i18n="Exclude lightweight sessions">排除轻量会话</span></label>
+        <button type="submit" data-i18n="Apply">应用</button>
         </form>
         <p id="stats-status" role="status"></p>
         <dl id="stats-totals" class="stats-totals"></dl>
         <div id="stats-chart"></div>
-        <div class="stats-table"><table aria-label="Session statistics"><thead><tr><th>Group</th><th>Sessions</th><th>Messages</th><th>User</th><th>Assistant</th><th>Tool</th></tr></thead><tbody id="stats-rows"></tbody></table></div>
-        <button id="stats-more" type="button" hidden>More groups</button>
+        <div class="stats-table"><table aria-label="会话统计" data-i18n-aria-label="Session statistics"><thead><tr><th data-i18n="Group">分组</th><th data-i18n="Sessions">会话</th><th data-i18n="Messages">消息</th><th data-i18n="User">用户</th><th data-i18n="Assistant">助手</th><th data-i18n="Tool">工具</th></tr></thead><tbody id="stats-rows"></tbody></table></div>
+        <button id="stats-more" type="button" hidden data-i18n="More groups">更多分组</button>
         </div>
         <div id="costs-content" hidden>
         <form id="costs-form" class="stats-filters">
-        <label>Group by <select id="costs-group"><option value="model">Model</option><option value="source">Source</option><option value="project">Project</option><option value="day">Day</option></select></label>
-        <label>Since <input id="costs-since" type="date"></label>
-        <label>Until <input id="costs-until" type="date"></label>
-        <label>Agents <select id="costs-agents"><option value="hide">Hide agents</option><option value="all">All</option><option value="only">Agents only</option></select></label>
-        <label>Top sessions <select id="costs-limit"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
-        <button type="submit">Apply</button>
+        <label><span data-i18n="Group by">分组依据</span> <select id="costs-group"><option value="model" data-i18n="Model">模型</option><option value="source" data-i18n="Source">来源</option><option value="project" data-i18n="Project">项目</option><option value="day" data-i18n="Day">日期</option></select></label>
+        <label><span data-i18n="Since">起始时间</span> <input id="costs-since" type="date"></label>
+        <label><span data-i18n="Until">截止时间</span> <input id="costs-until" type="date"></label>
+        <label><span data-i18n="Agents">智能体</span> <select id="costs-agents"><option value="hide" data-i18n="Hide agents">隐藏智能体</option><option value="all" data-i18n="All">全部</option><option value="only" data-i18n="Agents only">仅智能体</option></select></label>
+        <label><span data-i18n="Top sessions">排名靠前的会话</span> <select id="costs-limit"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+        <button type="submit" data-i18n="Apply">应用</button>
         </form>
         <p id="costs-status" role="status"></p>
         <dl id="costs-totals" class="stats-totals"></dl>
         <p id="costs-unpriced"></p>
         <div id="costs-chart"></div>
-        <div class="stats-table"><table aria-label="Cost breakdown"><thead><tr><th>Group</th><th>USD</th><th>Sessions</th><th>Input tokens</th><th>Output tokens</th><th>Cache read</th><th>Cache write</th></tr></thead><tbody id="costs-rows"></tbody></table></div>
-        <button id="costs-more" type="button" hidden>More groups</button>
-        <h3>Highest-cost sessions</h3>
+        <div class="stats-table"><table aria-label="费用明细" data-i18n-aria-label="Cost breakdown"><thead><tr><th data-i18n="Group">分组</th><th>USD</th><th data-i18n="Sessions">会话</th><th data-i18n="Input tokens">输入 token</th><th data-i18n="Output tokens">输出 token</th><th data-i18n="Cache read">缓存读取</th><th data-i18n="Cache write">缓存写入</th></tr></thead><tbody id="costs-rows"></tbody></table></div>
+        <button id="costs-more" type="button" hidden data-i18n="More groups">更多分组</button>
+        <h3 data-i18n="Highest-cost sessions">费用最高的会话</h3>
         <p id="costs-sessions-status" role="status"></p>
-        <div class="stats-table"><table aria-label="Session costs"><thead><tr><th>Session</th><th>Model</th><th>USD</th><th>Input tokens</th><th>Output tokens</th><th>Cache read</th><th>Cache write</th></tr></thead><tbody id="costs-sessions"></tbody></table></div>
+        <div class="stats-table"><table aria-label="会话费用" data-i18n-aria-label="Session costs"><thead><tr><th data-i18n="Session">会话</th><th data-i18n="Model">模型</th><th>USD</th><th data-i18n="Input tokens">输入 token</th><th data-i18n="Output tokens">输出 token</th><th data-i18n="Cache read">缓存读取</th><th data-i18n="Cache write">缓存写入</th></tr></thead><tbody id="costs-sessions"></tbody></table></div>
         </div>
         <div id="tools-content" hidden>
         <form id="tools-form" class="stats-filters">
-        <label>Group by <select id="tools-group"><option value="tool">Tool</option><option value="session">Session</option><option value="project">Project</option></select></label>
-        <label>Project contains <input id="tools-project" type="search" placeholder="Filter projects"></label>
-        <label>Since <input id="tools-since" type="date"></label>
-        <label>Until <input id="tools-until" type="date"></label>
-        <label>Agents <select id="tools-agents"><option value="hide">Hide agents</option><option value="all">All</option><option value="only">Agents only</option></select></label>
-        <button type="submit">Apply</button>
+        <label><span data-i18n="Group by">分组依据</span> <select id="tools-group"><option value="tool" data-i18n="Tool">工具</option><option value="session" data-i18n="Session">会话</option><option value="project" data-i18n="Project">项目</option></select></label>
+        <label><span data-i18n="Project contains">项目包含</span> <input id="tools-project" type="search" placeholder="筛选项目" data-i18n-placeholder="Filter projects"></label>
+        <label><span data-i18n="Since">起始时间</span> <input id="tools-since" type="date"></label>
+        <label><span data-i18n="Until">截止时间</span> <input id="tools-until" type="date"></label>
+        <label><span data-i18n="Agents">智能体</span> <select id="tools-agents"><option value="hide" data-i18n="Hide agents">隐藏智能体</option><option value="all" data-i18n="All">全部</option><option value="only" data-i18n="Agents only">仅智能体</option></select></label>
+        <button type="submit" data-i18n="Apply">应用</button>
         </form>
         <p id="tools-status" role="status"></p>
         <p id="tools-totals"></p>
         <div id="tools-chart"></div>
-        <div class="stats-table"><table aria-label="Tool activity"><thead><tr><th>Group</th><th>Calls</th><th>Sessions</th><th id="tools-col-tools">Tools</th></tr></thead><tbody id="tools-rows"></tbody></table></div>
-        <button id="tools-more" type="button" hidden>More groups</button>
+        <div class="stats-table"><table aria-label="工具活动" data-i18n-aria-label="Tool activity"><thead><tr><th data-i18n="Group">分组</th><th data-i18n="Calls">调用</th><th data-i18n="Sessions">会话</th><th id="tools-col-tools" data-i18n="Tools">工具</th></tr></thead><tbody id="tools-rows"></tbody></table></div>
+        <button id="tools-more" type="button" hidden data-i18n="More groups">更多分组</button>
         </div>
         <div id="files-content" hidden>
         <form id="files-form" class="stats-filters">
-        <label>Project contains <input id="files-project" type="search" placeholder="Filter projects"></label>
-        <label>Since <input id="files-since" type="date"></label>
-        <label>Until <input id="files-until" type="date"></label>
-        <label>Agents <select id="files-agents"><option value="hide">Hide agents</option><option value="all">All</option><option value="only">Agents only</option></select></label>
-        <button type="submit">Apply</button>
+        <label><span data-i18n="Project contains">项目包含</span> <input id="files-project" type="search" placeholder="筛选项目" data-i18n-placeholder="Filter projects"></label>
+        <label><span data-i18n="Since">起始时间</span> <input id="files-since" type="date"></label>
+        <label><span data-i18n="Until">截止时间</span> <input id="files-until" type="date"></label>
+        <label><span data-i18n="Agents">智能体</span> <select id="files-agents"><option value="hide" data-i18n="Hide agents">隐藏智能体</option><option value="all" data-i18n="All">全部</option><option value="only" data-i18n="Agents only">仅智能体</option></select></label>
+        <button type="submit" data-i18n="Apply">应用</button>
         </form>
         <p id="files-status" role="status"></p>
         <p id="files-totals"></p>
         <div id="files-chart"></div>
-        <div class="stats-table"><table aria-label="File activity"><thead><tr><th>File</th><th>Reads</th><th>Edits</th><th>Writes</th><th>Sessions</th></tr></thead><tbody id="files-rows"></tbody></table></div>
-        <button id="files-more" type="button" hidden>More files</button>
+        <div class="stats-table"><table aria-label="文件活动" data-i18n-aria-label="File activity"><thead><tr><th data-i18n="File">文件</th><th data-i18n="Reads">读取</th><th data-i18n="Edits">编辑</th><th data-i18n="Writes">写入</th><th data-i18n="Sessions">会话</th></tr></thead><tbody id="files-rows"></tbody></table></div>
+        <button id="files-more" type="button" hidden data-i18n="More files">更多文件</button>
         </div>
         <div id="usage-content" hidden>
-        <button id="usage-refresh" type="button">Reload observations</button>
+        <button id="usage-refresh" type="button" data-i18n="Reload observations">重新加载观测数据</button>
         <p id="usage-status" role="status"></p>
         <div id="usage-chart"></div>
-        <div class="stats-table"><table aria-label="Recorded usage"><thead><tr><th>Source</th><th>Metric</th><th>Value / limit</th><th>Basis</th><th>Status</th><th>Resets</th><th>Collected</th></tr></thead><tbody id="usage-rows"></tbody></table></div>
+        <div class="stats-table"><table aria-label="已记录用量" data-i18n-aria-label="Recorded usage"><thead><tr><th data-i18n="Source">来源</th><th data-i18n="Metric">指标</th><th data-i18n="Value / limit">值 / 上限</th><th data-i18n="Basis">依据</th><th data-i18n="Status">状态</th><th data-i18n="Resets">重置</th><th data-i18n="Collected">采样时间</th></tr></thead><tbody id="usage-rows"></tbody></table></div>
         </div>
         <div id="ai-content" hidden>
         <form id="ai-form" class="stats-filters">
-        <label>Caller <input id="ai-caller" maxlength="128" placeholder="e.g. summary"></label>
-        <label>Model <input id="ai-model" maxlength="128" placeholder="Exact model name"></label>
-        <label>Session ID <input id="ai-session" maxlength="4096"></label>
-        <label>From <input id="ai-from" type="date"></label>
-        <label>To <input id="ai-to" type="date"></label>
-        <label>Outcome <select id="ai-errors"><option value="">All</option><option value="true">Errors</option><option value="false">Successful</option></select></label>
-        <button type="submit">Find calls</button>
-        <button id="ai-stats-refresh" type="button">View statistics</button>
+        <label><span data-i18n="Caller">调用方</span> <input id="ai-caller" maxlength="128" placeholder="例如：summary" data-i18n-placeholder="e.g. summary"></label>
+        <label><span data-i18n="Model">模型</span> <input id="ai-model" maxlength="128" placeholder="精确模型名称" data-i18n-placeholder="Exact model name"></label>
+        <label><span data-i18n="Session ID">会话 ID</span> <input id="ai-session" maxlength="4096"></label>
+        <label><span data-i18n="From">从</span> <input id="ai-from" type="date"></label>
+        <label><span data-i18n="To">至</span> <input id="ai-to" type="date"></label>
+        <label><span data-i18n="Outcome">结果</span> <select id="ai-errors"><option value="" data-i18n="All">全部</option><option value="true" data-i18n="Errors">错误</option><option value="false" data-i18n="Successful">成功</option></select></label>
+        <button type="submit" data-i18n="Find calls">查找调用</button>
+        <button id="ai-stats-refresh" type="button" data-i18n="View statistics">查看统计</button>
         </form>
-        <p class="meta">Statistics use the date range only; without dates they cover the last 24 hours. Call history uses all filters.</p>
+        <p class="meta" data-i18n="Statistics use the date range only; without dates they cover the last 24 hours. Call history uses all filters.">统计仅使用日期范围；未指定日期时覆盖最近 24 小时。调用历史使用所有筛选条件。</p>
         <p id="ai-stats-status" role="status"></p><div id="ai-stats"></div>
         <p id="ai-status" role="status"></p><div id="ai-chart"></div>
-        <div class="stats-table"><table aria-label="AI call history"><thead><tr><th>Call</th><th>Time / outcome</th><th>Model</th><th>Tokens</th><th>Details</th></tr></thead><tbody id="ai-rows"></tbody></table></div>
-        <button id="ai-more" type="button" hidden>More calls</button>
-        <section id="ai-detail" class="settings-section" hidden aria-label="AI call details"></section>
+        <div class="stats-table"><table aria-label="AI 调用历史" data-i18n-aria-label="AI call history"><thead><tr><th data-i18n="Call">调用</th><th data-i18n="Time / outcome">时间 / 结果</th><th data-i18n="Model">模型</th><th data-i18n="Tokens">token 数</th><th data-i18n="Details">详情</th></tr></thead><tbody id="ai-rows"></tbody></table></div>
+        <button id="ai-more" type="button" hidden data-i18n="More calls">更多调用</button>
+        <section id="ai-detail" class="settings-section" hidden aria-label="AI 调用详情" data-i18n-aria-label="AI call details"></section>
         </div>
         <div id="repos-content" hidden>
-        <button id="repos-refresh" type="button">Reload observations</button>
+        <button id="repos-refresh" type="button" data-i18n="Reload observations">重新加载观测数据</button>
         <p id="repos-status" role="status"></p>
         <div id="repos-chart"></div>
         <div id="repos-rows" class="health-grid"></div>
-        <button id="repos-more" type="button" hidden>More repositories</button>
+        <button id="repos-more" type="button" hidden data-i18n="More repositories">更多仓库</button>
         </div>
         </section>
         </main>
         <dialog id="insight-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="insight-heading" tabindex="-1">
-        <div class="insight-heading"><h2 id="insight-heading">Insight</h2><button id="insight-close" type="button">Close</button></div>
+        <div class="insight-heading"><h2 id="insight-heading" data-i18n="Insight">洞察</h2><button id="insight-close" type="button" data-i18n="Close">关闭</button></div>
         <p id="insight-detail-status" role="status"></p>
-        <div id="insight-body"></div><button id="insight-more" type="button" hidden>Read more</button>
+        <div id="insight-body"></div><button id="insight-more" type="button" hidden data-i18n="Read more">阅读更多</button>
         </dialog>
         <div id="toast-region" class="toast-region" aria-live="polite"></div>
         <script src="/web/app.js"></script>
@@ -468,7 +475,17 @@ enum WebUIRoutes {
         ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
         a { color: inherit; text-decoration: none; }
         .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-        .top-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 56px; padding: 10px 20px; margin-bottom: 18px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: var(--topbar-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+        :root { --page-width:1600px; --page-gutter:24px; }
+        .top-nav { padding: 8px 0; margin-bottom: 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; background: var(--topbar-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+        .header-row, .header-feedback { width: 100%; max-width: var(--page-width); margin: 0 auto; padding: 0 var(--page-gutter); }
+        .header-row { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+        .header-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
+        .header-tools button, .language-picker select { min-height: 44px; }
+        .language-picker { display: flex; margin: 0; }
+        .language-picker select { font: inherit; font-size: 12px; padding: 6px; }
+        .header-feedback > p:empty { display: none; }
+        #language-status { margin: 4px 0; color: var(--danger); }
+        #status[data-tone="ok"], #status[data-tone="neutral"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
         h1 { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 17px; line-height: 1.25; letter-spacing: -0.03em; font-weight: 680; }
         h1::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
         .lede, #status { margin: 0; color: var(--muted); font-size: 12px; }
@@ -481,7 +498,7 @@ enum WebUIRoutes {
         #status:empty { display: none; }
         #logout { order: 5; }
         #shortcuts-help { order: 6; font-size: 12px; padding: 6px 9px; }
-        .page-nav { display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+        .page-nav { position: relative; padding: 3px; display: flex; flex: 1 1 auto; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
         .page-nav a { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: var(--r-md); color: var(--muted); font-weight: 550; font-size: 13px; letter-spacing: -0.01em; white-space: nowrap; transition: color var(--dur-1) ease, background var(--dur-1) ease; }
         .page-nav a .icon { flex: none; opacity: 0.85; }
         .page-nav a:hover { color: var(--text); background: var(--panel); }
@@ -549,7 +566,7 @@ enum WebUIRoutes {
         #search > button[type="submit"], #login button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
         #search > button[type="submit"]:hover, #login button[type="submit"]:hover { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 85%, var(--text)); }
         .icon { flex: none; vertical-align: middle; }
-        #workspace { width: 100%; max-width: 960px; margin: 0 auto; padding: 0 20px 40px; }
+        #workspace { width: 100%; max-width: var(--page-width); margin: 0 auto; padding: 0 var(--page-gutter) 40px; }
         .advanced-filters label.tool-filter { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 8px 0; }
         .advanced-filters .tool-filter input { width: auto; margin: 0; }
         .search-mode-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
@@ -679,8 +696,8 @@ enum WebUIRoutes {
         .message details.tool-error { border-color: var(--danger); }
         dialog:not(:modal)[open] { position: fixed; inset: 10vh 0 auto; z-index: 50; max-height: 80vh; overflow-y: auto; box-shadow: var(--shadow-1); }
         @media (max-width: 600px) {
-          .page-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow-x: visible; margin: 0; gap: 3px; }
-          .page-nav a { justify-content: center; min-height: 36px; }
+          .page-nav { display: flex; flex-wrap: nowrap; overflow-x: auto; margin: 0; gap: 3px; }
+          .page-nav a { flex: none; justify-content: center; min-height: 44px; }
           #settings-content { grid-template-columns: minmax(0, 1fr); }
           .sign-in-card { margin: 24px 16px; padding: 20px; }
           .health-card dl { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
@@ -713,18 +730,18 @@ enum WebUIRoutes {
         .sticky .meta { margin: 0; }
 
         @media (min-width: 880px) {
-          .top-nav { padding-left: max(20px, calc((100% - 920px) / 2)); padding-right: max(20px, calc((100% - 920px) / 2)); }
           .session .title { white-space: nowrap; text-overflow: ellipsis; display: block; }
           #search-query { flex: 1 1 20rem; }
           .facet-picker { flex: 0 1 10rem; }
         }
         @media (max-width: 879px) {
-          .top-nav { padding: 10px 16px 6px; gap: 6px 10px; }
+          :root { --page-gutter:16px; }
+          .header-row { flex-wrap: wrap; gap: 6px 10px; }
           .top-nav .lede { display: none; }
           .top-nav h1 { flex: 1 1 auto; }
-          .page-nav { order: 10; flex: 1 1 100%; margin: 0 -6px; }
+          .page-nav { order: 10; flex: 1 1 100%; margin: 0; }
           .list-toolbar .session-jump { flex: 1 1 100%; }
-          #workspace { padding: 0 16px 24px; }
+          #workspace { padding-bottom: 24px; }
           #search input, #search select { max-width: 100%; }
           #detail h2 {
             margin: 0 0 4px;
@@ -930,8 +947,17 @@ enum WebUIRoutes {
           #files-rows td[data-label]::before, #usage-rows td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
         }
         @media (prefers-color-scheme: light) { .page-nav a[aria-current="page"] { color: #166534; } }
-        #command-trigger { order: 6; min-height: 44px; }
-        #command-trigger kbd { font: 11px var(--mono); color: var(--muted); margin-left: 5px; }
+        #command-trigger { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; min-width: 170px; text-align: left; color: var(--muted); background: var(--input-bg); }
+        #command-trigger kbd { margin-left: auto; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; font: 11px var(--mono); color: var(--muted); }
+        @media (min-width: 880px) and (max-width: 1250px) { .header-row { flex-wrap: wrap; } .page-nav { order: 10; flex-basis: 100%; } }
+        @media (max-width: 600px) {
+          #command-trigger { min-width: 44px; width: 44px; justify-content: center; padding: 8px; }
+          #command-trigger .command-trigger-label, #command-trigger kbd { display: none; }
+          #shortcuts-help { min-width: 32px; }
+          .header-row h1 { font-size: 15px; }
+          .header-tools { gap: 4px; }
+          #logout { padding: 6px; font-size: 12px; }
+        }
         #command-dialog { width: min(640px, calc(100vw - 32px)); box-sizing: border-box; max-height: 85vh; max-height: 85dvh; overflow-y: auto; padding: 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--text); }
         #command-dialog::backdrop { background: rgba(0,0,0,.65); }
         #command-dialog h2 { margin-top: 0; }
@@ -952,7 +978,7 @@ enum WebUIRoutes {
         .message.find-target, .session[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
         mark, .search-snippet mark { color: var(--text); background: var(--accent-dim); font-weight: 600; }
         /* Charts scale by viewBox, without observers, runtime CSS injection or animation. */
-        #workspace.data-page { max-width: 1200px; }
+        /* All library, detail and data pages share the same shell width. */
         #stats-page .agent-filters button[aria-pressed="true"] { color:var(--text); }
         :root { --c1:var(--accent); }
         .dashboard-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr)); gap:12px; margin:16px 0; }
@@ -1002,12 +1028,12 @@ enum WebUIRoutes {
         }
         const healthContent = document.getElementById("health-content");
         const healthStatus = document.getElementById("health-status");
-        const statsFields = [["sessionCount", "Sessions"], ["messageCount", "Messages"], ["userMessageCount", "User"], ["assistantMessageCount", "Assistant"], ["toolMessageCount", "Tool"]];
+        const statsFields = [["sessionCount", t("Sessions")], ["messageCount", t("Messages")], ["userMessageCount", t("User")], ["assistantMessageCount", t("Assistant")], ["toolMessageCount", t("Tool")]];
         let statsSnapshot = "";
         let statsCursor = "";
         let statsFilters = "";
         let statsTotals = null, statsTimeZone = "", statsChoicesVersion = 0;
-        const costFields = [["costUsd", "Cost (USD)"], ["sessionCount", "Sessions"], ["inputTokens", "Input tokens"], ["outputTokens", "Output tokens"], ["cacheReadTokens", "Cache read"], ["cacheCreationTokens", "Cache write"]];
+        const costFields = [["costUsd", t("Cost (USD)")], ["sessionCount", t("Sessions")], ["inputTokens", t("Input tokens")], ["outputTokens", t("Output tokens")], ["cacheReadTokens", t("Cache read")], ["cacheCreationTokens", t("Cache write")]];
         let statsView = "sessions";
         const chartRows = { stats: [], costs: [], tools: [], files: [], repos: [], ai: [] };
         let overviewStreams = null;
@@ -1080,7 +1106,7 @@ enum WebUIRoutes {
         let settingsWriteBusy = false;
         let settingsDeleteButtons = [];
         let aiConfigVersion = 0, aiConfigSaved = null, aiConfigBusy = false, aiConfigUncertain = false;
-        const aiConfigFields = [{"key": "aiProtocol", "label": "Protocol", "type": "choice", "choices": ["openai", "disabled"]}, {"key": "aiBaseURL", "label": "API base URL", "type": "text", "max": 2048}, {"key": "aiModel", "label": "Model", "type": "text", "max": 256}, {"key": "summaryLanguage", "label": "Language", "type": "text", "max": 64}, {"key": "summaryMaxSentences", "label": "Maximum sentences", "type": "number", "min": 1, "max": 20, "integer": true}, {"key": "summaryStyle", "label": "Style", "type": "text", "max": 512}, {"key": "summaryPrompt", "label": "Custom prompt", "type": "text", "max": 8000}, {"key": "summaryMaxTokens", "label": "Maximum output tokens", "type": "number", "min": 1, "max": 32768, "integer": true}, {"key": "summaryTemperature", "label": "Temperature", "type": "number", "min": 0, "max": 2, "integer": false}, {"key": "summarySampleFirst", "label": "First messages", "type": "number", "min": 0, "max": 200, "integer": true}, {"key": "summarySampleLast", "label": "Last messages", "type": "number", "min": 0, "max": 200, "integer": true}, {"key": "summaryTruncateChars", "label": "Characters per message", "type": "number", "min": 1, "max": 10000, "integer": true}, {"key": "titleProvider", "label": "Provider", "type": "choice", "choices": ["ollama", "custom", "openai"]}, {"key": "titleBaseUrl", "label": "API base URL", "type": "text", "max": 2048}, {"key": "titleModel", "label": "Model", "type": "text", "max": 256}, {"key": "embeddingBaseURL", "label": "API base URL", "type": "text", "max": 2048}, {"key": "embeddingModel", "label": "Model", "type": "text", "max": 256}, {"key": "embeddingDimension", "label": "Dimensions", "type": "number", "min": 1, "max": 65536, "integer": true}, {"key": "embeddingIncludeDimensions", "label": "Send dimensions to provider", "type": "boolean"}, {"key": "aiAudit.enabled", "label": "Record calls", "type": "boolean"}, {"key": "aiAudit.logBodies", "label": "Store redacted request and response bodies", "type": "boolean"}, {"key": "aiAudit.maxBodySize", "label": "Maximum stored body size", "type": "number", "min": 1, "max": 1000000, "integer": true}];
+        const aiConfigFields = [{"key": "aiProtocol", "label": t("Protocol"), "type": "choice", "choices": ["openai", "disabled"]}, {"key": "aiBaseURL", "label": t("API base URL"), "type": "text", "max": 2048}, {"key": "aiModel", "label": t("Model"), "type": "text", "max": 256}, {"key": "summaryLanguage", "label": t("Language"), "type": "text", "max": 64}, {"key": "summaryMaxSentences", "label": t("Maximum sentences"), "type": "number", "min": 1, "max": 20, "integer": true}, {"key": "summaryStyle", "label": t("Style"), "type": "text", "max": 512}, {"key": "summaryPrompt", "label": t("Custom prompt"), "type": "text", "max": 8000}, {"key": "summaryMaxTokens", "label": t("Maximum output tokens"), "type": "number", "min": 1, "max": 32768, "integer": true}, {"key": "summaryTemperature", "label": t("Temperature"), "type": "number", "min": 0, "max": 2, "integer": false}, {"key": "summarySampleFirst", "label": t("First messages"), "type": "number", "min": 0, "max": 200, "integer": true}, {"key": "summarySampleLast", "label": t("Last messages"), "type": "number", "min": 0, "max": 200, "integer": true}, {"key": "summaryTruncateChars", "label": t("Characters per message"), "type": "number", "min": 1, "max": 10000, "integer": true}, {"key": "titleProvider", "label": t("Provider"), "type": "choice", "choices": ["ollama", "custom", "openai"]}, {"key": "titleBaseUrl", "label": t("API base URL"), "type": "text", "max": 2048}, {"key": "titleModel", "label": t("Model"), "type": "text", "max": 256}, {"key": "embeddingBaseURL", "label": t("API base URL"), "type": "text", "max": 2048}, {"key": "embeddingModel", "label": t("Model"), "type": "text", "max": 256}, {"key": "embeddingDimension", "label": t("Dimensions"), "type": "number", "min": 1, "max": 65536, "integer": true}, {"key": "embeddingIncludeDimensions", "label": t("Send dimensions to provider"), "type": "boolean"}, {"key": "aiAudit.enabled", "label": t("Record calls"), "type": "boolean"}, {"key": "aiAudit.logBodies", "label": t("Store redacted request and response bodies"), "type": "boolean"}, {"key": "aiAudit.maxBodySize", "label": t("Maximum stored body size"), "type": "number", "min": 1, "max": 1000000, "integer": true}];
         let sourceSettingsVersion = 0;
         let sourceSettingsRows = new Map();
         let aliasProjectVersion = 0;
@@ -1094,6 +1120,9 @@ enum WebUIRoutes {
         const routeFilterKeys = ["q", "sources", "projects", "agents", "since", "until", "tools", "machine", "mode", "limit", "sort", "group", "noise"];
         let commandSessions = [], commandResults = [], commandIndex = -1, commandRevision = 0, commandContext = null;
         const statsTabs = ["sessions", "costs", "tools", "files", "usage", "repos", "ai"];
+        function groupLabel(key) {
+          return uiLocale === "en" ? key : t(({source:"Source",project:"Project",day:"Day",week:"Week",hourOfWeek:"Hour of week",model:"Model",tool:"Tool",session:"Session"})[key] || key);
+        }
         function cancelSearchTimer() {
           searchInputVersion += 1;
           if (searchTimer !== null && typeof clearTimeout === "function") clearTimeout(searchTimer);
@@ -1161,23 +1190,23 @@ enum WebUIRoutes {
         }
         function plural(count, singular, pluralForm) {
           const value = Number(count);
-          const shown = Number.isFinite(value) ? value.toLocaleString("en-US") : String(count);
-          return shown + " " + (value === 1 ? singular : pluralForm || singular + "s");
+          const shown = Number.isFinite(value) ? value.toLocaleString(uiLocale) : String(count);
+          return shown + " " + (uiLocale === "zh-CN" ? t(singular) : value === 1 ? singular : pluralForm || singular + "s");
         }
         const httpStatusWords = {
-          400: "Bad request", 401: "Not authorized", 403: "Access denied", 404: "Not found", 408: "Request timed out",
-          409: "Conflict", 413: "Request too large", 422: "Invalid request", 429: "Too many requests",
-          500: "Server error", 502: "Bad gateway", 503: "Service unavailable", 504: "Gateway timeout"
+          400: t("Bad request"), 401: t("Not authorized"), 403: t("Access denied"), 404: t("Not found"), 408: t("Request timed out"),
+          409: t("Conflict"), 413: t("Request too large"), 422: t("Invalid request"), 429: t("Too many requests"),
+          500: t("Server error"), 502: t("Bad gateway"), 503: t("Service unavailable"), 504: t("Gateway timeout")
         };
         function httpStatusText(status) {
-          return (httpStatusWords[status] || (status >= 500 ? "Server error" : "Request failed")) + " (" + status + ")";
+          return (httpStatusWords[status] || (status >= 500 ? t("Server error") : t("Request failed"))) + " (" + status + ")";
         }
         function setStatus(value) {
           const text = value == null ? "" : String(value);
           setText(statusNode, text);
           if (!statusNode.dataset) return;
-          statusNode.dataset.tone = !text ? "" : /^signed in$|^Signed in as /.test(text) ? "ok"
-            : /^signed out$|^Finding session/.test(text) ? "neutral" : "danger";
+          statusNode.dataset.tone = !text ? "" : text === t("signed in") || text.startsWith(t("Signed in as {name}", {name:""})) ? "ok"
+            : text === t("signed out") || text === t("Finding session…") ? "neutral" : "danger";
         }
         function toast(message, tone) {
           const region = document.getElementById("toast-region");
@@ -1192,7 +1221,7 @@ enum WebUIRoutes {
           const close = document.createElement("button");
           close.type = "button";
           close.className = "toast-close";
-          close.setAttribute("aria-label", "Dismiss notification");
+          close.setAttribute("aria-label", t("Dismiss notification"));
           close.appendChild(icon("x"));
           function dismiss() { if (item.parentNode === region) region.removeChild(item); }
           close.addEventListener("click", dismiss);
@@ -1226,7 +1255,7 @@ enum WebUIRoutes {
         function showListSkeleton() {
           setText(sessionsNode, "");
           sessionsNode.setAttribute("aria-busy", "true");
-          setText(document.getElementById("session-page-status"), "Loading sessions…");
+          setText(document.getElementById("session-page-status"), t("Loading sessions…"));
           for (let i = 0; i < 6; i += 1) {
             const row = document.createElement("div");
             row.className = "skeleton-row";
@@ -1256,7 +1285,7 @@ enum WebUIRoutes {
             statsChoicesVersion += 1;
             ["source","project"].forEach(function (kind) {
               const node = document.getElementById("stats-" + kind); setText(node,"");
-              const option = document.createElement("option"); option.value = ""; setText(option,kind === "source" ? "All sources" : "All projects"); node.appendChild(option); node.value = "";
+              const option = document.createElement("option"); option.value = ""; setText(option,kind === "source" ? t("All sources") : t("All projects")); node.appendChild(option); node.value = "";
             });
             setText(document.getElementById("stats-choices-status"),"");
             clearStats();
@@ -1286,7 +1315,7 @@ enum WebUIRoutes {
           setText(detailNode, "");
           clearSessionPaging();
           clearMessages();
-          setStatus("Session expired");
+          setStatus(t("Session expired"));
           bumpEpoch();
           // One silent re-mint per expiry; the 5 s floor stops a mint/401 loop.
           if (identityMode && Date.now() - identitySignInAt > 5000) identitySignIn(true).catch(function () {});
@@ -1301,7 +1330,7 @@ enum WebUIRoutes {
           } catch (error) {
             identitySignInPending = false;
             if (token !== requestEpoch) return false;
-            setStatus(error.status === 403 ? "Your tailnet login is not permitted for this Web origin." : "Tailnet sign-in unavailable");
+            setStatus(error.status === 403 ? t("Your tailnet login is not permitted for this Web origin.") : t("Tailnet sign-in unavailable"));
             return false;
           }
           if (token !== requestEpoch) { identitySignInPending = false; return false; }
@@ -1328,7 +1357,7 @@ enum WebUIRoutes {
         }
         function showSessionDetailPane() {
           activatePage(activePage === "search" ? "search" : "sessions");
-          setText(backNode, detailReturnPage === "insights" ? "Insights" : detailReturnPage === "stats" ? (statsView === "tools" ? "Tools" : "Costs") : activePage === "search" ? "Search results" : "Sessions");
+          setText(backNode, detailReturnPage === "insights" ? t("Insights") : detailReturnPage === "stats" ? (statsView === "tools" ? t("Tools") : t("Costs")) : activePage === "search" ? t("Search results") : t("Sessions"));
           if (workspaceNode.className !== "showing-detail") sessionListScrollTop = window.scrollY;
           workspaceNode.className = "showing-detail";
           backNode.hidden = false;
@@ -1338,7 +1367,7 @@ enum WebUIRoutes {
           setText(detailNode, "");
           const empty = document.createElement("p");
           empty.className = "empty";
-          setText(empty, "Select a session to read it.");
+          setText(empty, t("Select a session to read it."));
           detailNode.appendChild(empty);
         }
         function activatePage(page) {
@@ -1357,6 +1386,12 @@ enum WebUIRoutes {
           ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].forEach(function (name) {
             document.getElementById("nav-" + name).setAttribute("aria-current", name === activePage ? "page" : "false");
           });
+          const nav = document.getElementById("page-nav"), link = document.getElementById("nav-" + activePage);
+          // Scroll only this viewport; retain the 3px padding for the keyboard focus ring.
+          if (nav.clientWidth > 0 && nav.scrollWidth > nav.clientWidth) {
+            if (link.offsetLeft - 3 < nav.scrollLeft) nav.scrollLeft = Math.max(0, link.offsetLeft - 3);
+            else if (link.offsetLeft + link.offsetWidth + 3 > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = link.offsetLeft + link.offsetWidth + 3 - nav.clientWidth;
+          }
         }
         async function navigate(page, routed, tab) {
           routeVersion += routed ? 0 : 1;
@@ -1380,7 +1415,7 @@ enum WebUIRoutes {
           } else if (activePage === "health") {
             setText(healthContent, "");
             setText(document.getElementById("health-summary"), "");
-            setText(healthStatus, "Loading…");
+            setText(healthStatus, t("Loading…"));
             await loadOverview();
           } else if (activePage === "search") {
             await refreshLibrary(true);
@@ -1521,7 +1556,7 @@ enum WebUIRoutes {
             // Native legacy fragment scrolling can run after hashchange. Restore after that browser step.
             if (typeof requestAnimationFrame === "function") requestAnimationFrame(restore);
             else if (typeof setTimeout === "function") setTimeout(restore,0);
-          }).catch(function () { setStatus("Route unavailable. Try opening it again."); });
+          }).catch(function () { setStatus(t("Route unavailable. Try opening it again.")); });
         }
         function clearSearchData() {
           clearInsights();
@@ -1538,8 +1573,8 @@ enum WebUIRoutes {
           const status = document.getElementById("search-capabilities");
           const params = new URLSearchParams(sessionQuery(false).slice(1));
           ["query", "mode", "limit", "sort", "snapshotId", "cursor"].forEach(function (key) { params.delete(key); });
-          setText(status, "Checking search availability…");
-          setText(document.getElementById("search-capability-summary"), "Checking search availability…");
+          setText(status, t("Checking search availability…"));
+          setText(document.getElementById("search-capability-summary"), t("Checking search availability…"));
           try {
             const suffix = params.toString().replaceAll("+", "%20");
             const page = await api("GET", "/web/api/search/status" + (suffix ? "?" + suffix : ""));
@@ -1547,20 +1582,20 @@ enum WebUIRoutes {
             const modes = ["keyword", "semantic", "hybrid"];
             if (!page || modes.some(function (mode) { return !["available", "unavailable"].includes(page[mode]); })) throw new Error("invalid search status");
             modes.forEach(function (mode) { document.getElementById("mode-" + mode).disabled = page[mode] !== "available"; });
-            const notes = [page.semantic === "available" ? "Semantic search ready" : "Semantic search unavailable"];
+            const notes = [page.semantic === "available" ? t("Semantic search ready") : t("Semantic search unavailable")];
             if (Number.isSafeInteger(page.embeddedSessionCount) && Number.isSafeInteger(page.eligibleSessionCount)) {
-              notes.push("Semantic index: " + page.embeddedSessionCount.toLocaleString("en-US") + " / " + page.eligibleSessionCount.toLocaleString("en-US") + " sessions" + (Number.isFinite(page.progressPercent) ? " (" + page.progressPercent + "%)" : ""));
+              notes.push(t("Semantic index: {0} / {1} sessions{2}", [page.embeddedSessionCount.toLocaleString(uiLocale), page.eligibleSessionCount.toLocaleString(uiLocale), Number.isFinite(page.progressPercent) ? " (" + page.progressPercent + "%)" : ""]));
             }
             if (page.model) notes.push(page.model);
             if (page.warning) notes.push(page.warning);
             setText(status, notes.join(" · "));
-            setText(document.getElementById("search-capability-summary"), "Search availability · " + (page.semantic === "available" ? "Semantic ready" : page.hybrid === "available" ? "Hybrid ready" : "Keyword only") + (page.warning ? " · warning" : ""));
+            setText(document.getElementById("search-capability-summary"), t("Search availability · {0}{1}", [page.semantic === "available" ? t("Semantic ready") : page.hybrid === "available" ? t("Hybrid ready") : t("Keyword only"), page.warning ? t(" · warning") : ""]));
           } catch (error) {
             if (version === searchStatusVersion) {
               document.getElementById("mode-semantic").disabled = true;
               document.getElementById("mode-hybrid").disabled = true;
-              setText(status, "Search status unavailable. Submit a search to retry.");
-              setText(document.getElementById("search-capability-summary"), "Search availability unknown · submit to retry");
+              setText(status, t("Search status unavailable. Submit a search to retry."));
+              setText(document.getElementById("search-capability-summary"), t("Search availability unknown · submit to retry"));
             }
           }
         }
@@ -1570,22 +1605,22 @@ enum WebUIRoutes {
           if (query.value.trim() && activePage !== "search") list.push(["“" + query.value.trim() + "”", function () { query.value = ""; }]);
           ["source", "project"].forEach(function (kind) {
             facets[kind].selected.forEach(function (label, key) {
-              list.push([(kind === "source" ? "Source: " : "Project: ") + label, function () {
+              list.push([(kind === "source" ? t("Source: ") : t("Project: ")) + label, function () {
                 facets[kind].selected.delete(key);
                 updateFacetSummary(kind);
                 renderFacets(kind);
               }]);
             });
           });
-          [["since", "Since "], ["until", "Until "]].forEach(function (pair) {
+          [["since", t("Since ")], ["until", t("Until ")]].forEach(function (pair) {
             const input = document.getElementById(pair[0]);
             if (input.value) list.push([pair[1] + input.value, function () { input.value = ""; }]);
           });
           const tools = document.getElementById("hide-tools");
-          if (tools.checked) list.push(["Hiding tool-only", function () { tools.checked = false; }]);
+          if (tools.checked) list.push([t("Hiding tool-only"), function () { tools.checked = false; }]);
           const machine = document.getElementById("machineId");
-          if (machine.value.trim()) list.push(["Machine: " + machine.value.trim(), function () { machine.value = ""; }]);
-          if (agentFilter !== "hide") list.push([agentFilter === "only" ? "Agents only" : "Including agents", function () { setAgentFilter("hide"); }]);
+          if (machine.value.trim()) list.push([t("Machine: {0}", [machine.value.trim()]), function () { machine.value = ""; }]);
+          if (agentFilter !== "hide") list.push([agentFilter === "only" ? t("Agents only") : t("Including agents"), function () { setAgentFilter("hide"); }]);
           return list;
         }
         function hasActiveFilters() {
@@ -1609,7 +1644,7 @@ enum WebUIRoutes {
             const remove = document.createElement("button");
             remove.type = "button";
             remove.className = "chip-remove";
-            remove.setAttribute("aria-label", "Remove filter " + entry[0]);
+            remove.setAttribute("aria-label", t("Remove filter {0}", [entry[0]]));
             remove.appendChild(icon("x"));
             remove.addEventListener("click", function () {
               entry[1]();
@@ -1622,7 +1657,7 @@ enum WebUIRoutes {
             const clear = document.createElement("button");
             clear.type = "button";
             clear.className = "chip-clear";
-            setText(clear, "Clear all");
+            setText(clear, t("Clear all"));
             clear.addEventListener("click", clearAllFilters);
             host.appendChild(clear);
           }
@@ -1655,7 +1690,7 @@ enum WebUIRoutes {
             rankedFilters = params.toString();
           } else { params.set("snapshotId",rankedSnapshot); params.set("cursor",rankedCursor); }
           rankedBusy = true; moreButton.disabled = true;
-          setText(status, "Searching…");
+          setText(status, t("Searching…"));
           try {
             const page = await api("GET", "/web/api/search?" + params.toString().replaceAll("+", "%20"));
             if (token !== requestEpoch) return;
@@ -1674,15 +1709,15 @@ enum WebUIRoutes {
             Array.from(sessionsNode.children).forEach(function (row) { row.hidden = false; }); updateSessionMore();
             rankedSnapshot = page.snapshotId || ""; rankedCursor = page.hasMore === true ? page.nextCursor : "";
             moreButton.hidden = !rankedCursor;
-            setStatus("signed in");
+            setStatus(t("signed in"));
             const modes = Array.isArray(page.searchModes) ? page.searchModes.join(" + ") : mode;
             const insightCount = more ? 0 : renderInsights(page.insightResults || []);
             const counts = plural(sessionsNode.children.length, "session") + (insightCount ? " · " + plural(insightCount, "insight") : "");
-            setText(status, counts + " · " + (page.warning || modes) + (page.coverage ? " · " + page.coverage : " · Legacy server: paging coverage not reported") + (page.truncated ? " · Truncated cohort" : ""));
+            setText(status, counts + " · " + (page.warning || modes) + (page.coverage ? " · " + page.coverage : t(" · Legacy server: paging coverage not reported")) + (page.truncated ? t(" · Truncated cohort") : ""));
           } catch (error) {
             if (token === requestEpoch) {
               rankedCursor = ""; moreButton.hidden = true;
-              setText(status, "Search unavailable or this server does not support continuation. Submit again to restart; no query options were silently dropped.");
+              setText(status, t("Search unavailable or this server does not support continuation. Submit again to restart; no query options were silently dropped."));
               if (!more) showListError();
             }
           } finally { if (token === requestEpoch) { rankedBusy = false; moreButton.disabled = false; } }
@@ -1710,15 +1745,15 @@ enum WebUIRoutes {
           insightCanWrite = false;
           updateInsightWriteControls();
           const status = document.getElementById("insight-write-status");
-          setText(status, "Checking edit access…");
+          setText(status, t("Checking edit access…"));
           try {
             const access = await api("GET", "/web/api/auth");
             if (version !== insightWriteVersion || activePage !== "search") return;
             insightCanWrite = access && access.canWrite === true;
-            setText(status, insightCanWrite ? "Save a note to your library. Keyword search is available immediately." : "Read only. Sign in with an editor key to save insights.");
+            setText(status, insightCanWrite ? t("Save a note to your library. Keyword search is available immediately.") : t("Read only. Sign in with an editor key to save insights."));
           } catch (error) {
             if (version !== insightWriteVersion || activePage !== "search") return;
-            setText(status, "Edit access unavailable. Close and reopen this section to retry.");
+            setText(status, t("Edit access unavailable. Close and reopen this section to retry."));
           }
           updateInsightWriteControls();
         }
@@ -1727,11 +1762,11 @@ enum WebUIRoutes {
           const status = document.getElementById("insight-write-status");
           const content = document.getElementById("insight-content-input").value.trim();
           if (content.length < 10 || content.length > 50000) {
-            setText(status, "Enter an insight between 10 and 50,000 characters."); return;
+            setText(status, t("Enter an insight between 10 and 50,000 characters.")); return;
           }
           const importance = Number(document.getElementById("insight-importance-input").value);
           if (!Number.isInteger(importance) || importance < 0 || importance > 5) {
-            setText(status, "Importance must be between 0 and 5."); return;
+            setText(status, t("Importance must be between 0 and 5.")); return;
           }
           const body = { content: content, importance: importance };
           [["wing", "insight-wing-input"], ["room", "insight-room-input"], ["sourceSessionId", "insight-source-input"]].forEach(function (field) {
@@ -1743,7 +1778,7 @@ enum WebUIRoutes {
           updateInsightWriteControls();
           savedInsightId = "";
           document.getElementById("insight-saved-read").hidden = true;
-          setText(status, "Saving…");
+          setText(status, t("Saving…"));
           try {
             const result = await api("POST", "/web/api/insights", JSON.stringify(body));
             if (version !== insightWriteVersion || activePage !== "search") return;
@@ -1751,17 +1786,17 @@ enum WebUIRoutes {
             savedInsightId = result.id;
             document.getElementById("insight-content-input").value = "";
             document.getElementById("insight-saved-read").hidden = false;
-            setText(status, "Saved. " + (result.warning || "Find it with keyword search."));
+            setText(status, t("Saved. {0}", [result.warning || t("Find it with keyword search.")]));
           } catch (error) {
             if (version !== insightWriteVersion || activePage !== "search") return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) {
               insightCanWrite = false;
-              setText(status, "Editor access required. Sign in again to save.");
+              setText(status, t("Editor access required. Sign in again to save."));
             } else if (error.status === 400 || error.status === 404) {
-              setText(status, "Could not save. Check the note and source session ID before retrying.");
+              setText(status, t("Could not save. Check the note and source session ID before retrying."));
             } else {
-              setText(status, "Could not confirm the save. Search before retrying; your draft is preserved.");
+              setText(status, t("Could not confirm the save. Search before retrying; your draft is preserved."));
             }
           } finally {
             insightSavePending = false;
@@ -1820,7 +1855,7 @@ enum WebUIRoutes {
           if (!more) clearInsightsPage();
           const state = insightsList, token = requestEpoch;
           const status = document.getElementById("insights-status"), button = document.getElementById("insights-more");
-          state.busy = true; button.disabled = true; setText(status,"Loading insights…");
+          state.busy = true; button.disabled = true; setText(status,t("Loading insights…"));
           const params = new URLSearchParams({limit:"25"});
           if (more) { params.set("snapshotId",state.snapshot); params.set("cursor",state.cursor); }
           try {
@@ -1835,20 +1870,20 @@ enum WebUIRoutes {
             page.items.forEach(function (item) {
               const card = document.createElement("article"); card.className = "insight-card";
               const label = document.createElement("p"); label.className = "meta";
-              setText(label,(item.sourceSessionId ? "Linked session note" : "Global library note") + (Number.isFinite(item.createdAt) ? " · " + new Date(item.createdAt * 1000).toLocaleString() : " · date unavailable"));
+              setText(label,(item.sourceSessionId ? t("Linked session note") : t("Global library note")) + (Number.isFinite(item.createdAt) ? " · " + new Date(item.createdAt * 1000).toLocaleString(uiLocale) : t(" · date unavailable")));
               const preview = document.createElement("p"); setText(preview,item.content);
-              const read = document.createElement("button"); read.type = "button"; setText(read,"Read insight"); read.addEventListener("click",function () { loadInsight(item.id,false); });
+              const read = document.createElement("button"); read.type = "button"; setText(read,t("Read insight")); read.addEventListener("click",function () { loadInsight(item.id,false); });
               card.appendChild(label); card.appendChild(preview); card.appendChild(read);
-              if (item.sourceSessionId) { const source = document.createElement("button"); source.type = "button"; setText(source,"Open source session"); source.addEventListener("click",function () { openDetail(item.sourceSessionId,"insights").catch(function () {}); }); card.appendChild(source); }
+              if (item.sourceSessionId) { const source = document.createElement("button"); source.type = "button"; setText(source,t("Open source session")); source.addEventListener("click",function () { openDetail(item.sourceSessionId,"insights").catch(function () {}); }); card.appendChild(source); }
               document.getElementById("insights-rows").appendChild(card);
             });
             state.items = state.items.concat(page.items); state.snapshot = page.snapshotId; state.cursor = page.nextCursor || "";
             button.hidden = !state.cursor;
-            setText(status,state.items.length ? state.items.length + " notes loaded · " + (state.cursor ? "More notes in this snapshot" : "End of snapshot") : "No active insights available. Global and admitted linked notes appear here.");
+            setText(status,state.items.length ? t("{0} notes loaded · {1}", [state.items.length, state.cursor ? t("More notes in this snapshot") : t("End of snapshot")]) : t("No active insights available. Global and admitted linked notes appear here."));
           } catch (error) {
             if (token !== requestEpoch || state !== insightsList || activePage !== "insights") return;
             button.hidden = true;
-            setText(status,[400,404,405,501].includes(error.status) ? "Insights unavailable on this server. Upgrade the server, then Refresh insights to retry." : "Insights changed or are unavailable. Refresh insights to restart the snapshot.");
+            setText(status,[400,404,405,501].includes(error.status) ? t("Insights unavailable on this server. Upgrade the server, then Refresh insights to retry.") : t("Insights changed or are unavailable. Refresh insights to restart the snapshot."));
           } finally { if (token === requestEpoch && state === insightsList) { state.busy = false; button.disabled = false; } }
         }
         document.getElementById("insights-refresh").addEventListener("click",function () { loadInsightsPage(false); });
@@ -1868,12 +1903,12 @@ enum WebUIRoutes {
             card.className = "insight-card";
             const label = document.createElement("span");
             label.className = "meta";
-            setText(label, item.matchType === "semantic" ? "Semantic match" : "Keyword match");
+            setText(label, item.matchType === "semantic" ? t("Semantic match") : t("Keyword match"));
             const preview = document.createElement("p");
             setText(preview, item.content);
             const read = document.createElement("button");
             read.type = "button";
-            setText(read, "Read insight");
+            setText(read, t("Read insight"));
             read.addEventListener("click", function () { loadInsight(item.id, false); });
             card.appendChild(label); card.appendChild(preview); card.appendChild(read);
             rows.appendChild(card);
@@ -1894,7 +1929,7 @@ enum WebUIRoutes {
           openModal(dialog, document.getElementById("insight-close"));
           insightBusy = true;
           button.disabled = true;
-          setText(status, "Loading insight…");
+          setText(status, t("Loading insight…"));
           const params = new URLSearchParams({ offset: String(offset), limit: "8000" });
           if (previous) params.set("revision", previous.revision);
           try {
@@ -1906,13 +1941,13 @@ enum WebUIRoutes {
             setText(body, (more ? body.textContent : "") + page.content);
             insightPage = page;
             button.hidden = page.nextOffset == null;
-            setText(status, page.nextOffset == null ? "Complete · " + page.totalLength.toLocaleString("en-US") + " characters" : end.toLocaleString("en-US") + " of " + page.totalLength.toLocaleString("en-US") + " characters");
+            setText(status, page.nextOffset == null ? t("Complete · {0} characters", [page.totalLength.toLocaleString(uiLocale)]) : t("{0} of {1} characters", [end.toLocaleString(uiLocale), page.totalLength.toLocaleString(uiLocale)]));
           } catch (error) {
             if (version !== insightVersion) return;
             insightPage = null;
             setText(body, "");
             button.hidden = true;
-            setText(status, "Insight changed or is unavailable. Close and reopen it to retry.");
+            setText(status, t("Insight changed or is unavailable. Close and reopen it to retry."));
           } finally {
             if (version === insightVersion) { insightBusy = false; button.disabled = false; }
           }
@@ -1983,8 +2018,8 @@ enum WebUIRoutes {
             });
             element.appendChild(list);
           }
-          fields(section("Database"), [["Visible sessions", summary.totalSessions.toLocaleString("en-US")], ["Web server", window.location.origin]]);
-          const sources = section("Active Sources");
+          fields(section(t("Database")), [[t("Visible sessions"), summary.totalSessions.toLocaleString(uiLocale)], [t("Web server"), window.location.origin]]);
+          const sources = section(t("Active Sources"));
           const badges = document.createElement("div");
           badges.className = "settings-sources";
           summary.sources.forEach(function (source) {
@@ -1993,41 +2028,41 @@ enum WebUIRoutes {
             setText(badge, sourceLabel(source.key));
             badges.appendChild(badge);
           });
-          if (!summary.sources.length) setText(badges, "No sources enabled.");
+          if (!summary.sources.length) setText(badges, t("No sources enabled."));
           sources.appendChild(badges);
-          const sync = section("Capture & sync provenance", true);
+          const sync = section(t("Capture & sync provenance"), true);
           const retired = document.createElement("p");
-          setText(retired, "Legacy peer-sync settings are retired in this runtime. Collectors publish captures to this server and its replicas; per-source heartbeats, last captures and replica acknowledgements are shown on the Health page.");
+          setText(retired, t("Legacy peer-sync settings are retired in this runtime. Collectors publish captures to this server and its replicas; per-source heartbeats, last captures and replica acknowledgements are shown on the Health page."));
           sync.appendChild(retired);
           const healthLink = document.createElement("a");
           healthLink.href = "#health";
-          setText(healthLink, "Open Health");
+          setText(healthLink, t("Open Health"));
           sync.appendChild(healthLink);
-          const unavailable = section("Not available in this deployment", true);
+          const unavailable = section(t("Not available in this deployment"), true);
           const unavailableNote = document.createElement("p");
-          setText(unavailableNote, "This Web runs on the central server and reads captured sessions only. The following legacy Web features read or acted on the machine that hosted the old Web and are intentionally not offered here:");
+          setText(unavailableNote, t("This Web runs on the central server and reads captured sessions only. The following legacy Web features read or acted on the machine that hosted the old Web and are intentionally not offered here:"));
           unavailable.appendChild(unavailableNote);
           const unavailableList = document.createElement("ul");
           [
-            "Skills, hooks, memory files and hygiene checks of a local machine — use the Engram app on that Mac.",
-            "Live session events and monitor alerts — Health shows per-source capture, ingest and replica observations instead.",
-            "Resume launch and link-sessions filesystem actions — run them on the machine that owns the session.",
-            "Developer mock, lint and log utilities — development-only endpoints, not part of the Web."
+            t("Skills, hooks, memory files and hygiene checks of a local machine — use the Engram app on that Mac."),
+            t("Live session events and monitor alerts — Health shows per-source capture, ingest and replica observations instead."),
+            t("Resume launch and link-sessions filesystem actions — run them on the machine that owns the session."),
+            t("Developer mock, lint and log utilities — development-only endpoints, not part of the Web.")
           ].forEach(function (text) {
             const item = document.createElement("li");
             setText(item, text);
             unavailableList.appendChild(item);
           });
           unavailable.appendChild(unavailableList);
-          const aliases = section("Project Aliases");
+          const aliases = section(t("Project Aliases"));
           const explanation = document.createElement("p");
-          setText(explanation, "Project names linked across moved or renamed directories.");
+          setText(explanation, t("Project names linked across moved or renamed directories."));
           aliases.appendChild(explanation);
           const table = document.createElement("table");
-          table.setAttribute("aria-label", "Project aliases");
+          table.setAttribute("aria-label", t("Project aliases"));
           const head = document.createElement("thead");
           const row = document.createElement("tr");
-          ["Old Project", "New Project", "Action"].forEach(function (text) {
+          [t("Old Project"), t("New Project"), t("Action")].forEach(function (text) {
             const cell = document.createElement("th");
             setText(cell, text);
             row.appendChild(cell);
@@ -2039,7 +2074,7 @@ enum WebUIRoutes {
           aliases.appendChild(table);
           if (!summary.aliases.length && !summary.nextCursor) {
             const empty = document.createElement("p");
-            setText(empty, "No visible project aliases.");
+            setText(empty, t("No visible project aliases."));
             aliases.appendChild(empty);
           }
         }
@@ -2050,7 +2085,7 @@ enum WebUIRoutes {
           const moreButton = document.getElementById("settings-more");
           const query = more ? "?" + new URLSearchParams({ snapshotId: settingsSnapshot, cursor: settingsCursor }).toString() : "";
           if (!more) clearSettings();
-          setText(status, "Loading…");
+          setText(status, t("Loading…"));
           document.getElementById("settings-content").setAttribute("aria-busy", "true");
           moreButton.disabled = true;
           try {
@@ -2061,7 +2096,7 @@ enum WebUIRoutes {
             if (!page || !Array.isArray(page.sources) || !Array.isArray(page.aliases)
                 || (more && page.snapshotId !== settingsSnapshot)) throw new Error("changed settings");
             if (!more) renderSettings(page);
-            setStatus("signed in");
+            setStatus(t("signed in"));
             page.aliases.forEach(function (alias) {
               const row = document.createElement("tr");
               [alias.aliasLabel || alias.alias, alias.canonicalLabel || alias.canonical].forEach(function (text) {
@@ -2072,8 +2107,8 @@ enum WebUIRoutes {
               const action = document.createElement("td");
               const remove = document.createElement("button");
               remove.type = "button";
-              setText(remove, "Delete");
-              remove.setAttribute("aria-label", "Delete alias " + (alias.aliasLabel || alias.alias));
+              setText(remove, t("Delete"));
+              remove.setAttribute("aria-label", t("Delete alias {0}", [alias.aliasLabel || alias.alias]));
               remove.addEventListener("click", function () { mutateAlias("remove", { alias: alias.alias, canonical: alias.canonical }); });
               settingsDeleteButtons.push(remove);
               action.appendChild(remove);
@@ -2083,10 +2118,10 @@ enum WebUIRoutes {
             settingsSnapshot = page.snapshotId;
             settingsCursor = page.nextCursor || "";
             moreButton.hidden = !settingsCursor;
-            setText(status, "Observed: " + healthTime(page.observedAt));
+            setText(status, t("Observed: {0}", [healthTime(page.observedAt)]));
             updateAliasControls();
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Settings unavailable. Refresh to retry.");
+            if (token === requestEpoch) setText(status, t("Settings unavailable. Refresh to retry."));
           } finally {
             if (token === requestEpoch) { moreButton.disabled = false; document.getElementById("settings-content").setAttribute("aria-busy", "false"); }
           }
@@ -2109,19 +2144,19 @@ enum WebUIRoutes {
         async function loadSettingsAccess() {
           const version = settingsAccessVersion;
           const status = document.getElementById("settings-access");
-          setText(status, "Checking edit access…");
+          setText(status, t("Checking edit access…"));
           try {
             const access = await api("GET", "/web/api/auth");
             if (version !== settingsAccessVersion || activePage !== "settings") return;
             settingsCanWrite = access && access.canWrite === true;
-            setText(status, settingsCanWrite ? "Editor access" : "Read only. Sign in with an editor key to make changes.");
+            setText(status, settingsCanWrite ? t("Editor access") : t("Read only. Sign in with an editor key to make changes."));
             updateAliasControls();
             loadSourceSettings();
             if (settingsCanWrite) loadAliasProjects(false);
           } catch (error) {
             if (version !== settingsAccessVersion || activePage !== "settings") return;
             settingsCanWrite = false;
-            setText(status, "Edit access unavailable. Refresh to retry.");
+            setText(status, t("Edit access unavailable. Refresh to retry."));
             updateAliasControls();
           }
         }
@@ -2157,16 +2192,16 @@ enum WebUIRoutes {
           const status = document.getElementById("ai-config-status");
           aiConfigBusy = true;
           updateAISettingsControls();
-          setText(status, "Loading saved settings…");
+          setText(status, t("Loading saved settings…"));
           try {
             const result = await api("GET", "/web/api/settings/ai");
             if (version !== aiConfigVersion || activePage !== "settings") return;
             renderAISettings(result);
-            setText(status, settingsCanWrite ? "Edit values and save your changes." : "Read only. Sign in with an editor key to change settings.");
+            setText(status, settingsCanWrite ? t("Edit values and save your changes.") : t("Read only. Sign in with an editor key to change settings."));
           } catch (error) {
             if (version !== aiConfigVersion || activePage !== "settings") return;
             aiConfigSaved = null;
-            setText(status, "Settings unavailable. Reload to retry.");
+            setText(status, t("Settings unavailable. Reload to retry."));
           } finally {
             aiConfigBusy = false;
             updateAISettingsControls();
@@ -2179,7 +2214,7 @@ enum WebUIRoutes {
           for (const field of aiConfigFields) {
             const node = document.getElementById("ai-config-" + field.key);
             const value = field.type === "boolean" ? node.checked : field.type === "number" ? (node.value.trim() ? Number(node.value) : NaN) : node.value;
-            if (!validAIConfigValue(field, value)) { setText(status, "Check " + field.label + " before saving."); return; }
+            if (!validAIConfigValue(field, value)) { setText(status, t("Check {0} before saving.", [field.label])); return; }
             if (field.key.startsWith("aiAudit.")) {
               if (!values.aiAudit) values.aiAudit = {};
               values.aiAudit[field.key.slice(8)] = value;
@@ -2190,22 +2225,22 @@ enum WebUIRoutes {
             }
           }
           if (patch.aiAudit) patch.aiAudit = values.aiAudit;
-          if (!Object.keys(patch).length) { setText(status, "No changes to save."); return; }
+          if (!Object.keys(patch).length) { setText(status, t("No changes to save.")); return; }
           const version = aiConfigVersion;
           aiConfigBusy = true;
           updateAISettingsControls();
-          setText(status, "Saving…");
+          setText(status, t("Saving…"));
           try {
             const result = await api("POST", "/web/api/settings/ai", JSON.stringify(patch));
             if (version !== aiConfigVersion || activePage !== "settings") return;
             renderAISettings(result);
-            setText(status, "Saved. Environment overrides still take precedence; existing vectors are unchanged.");
+            setText(status, t("Saved. Environment overrides still take precedence; existing vectors are unchanged."));
           } catch (error) {
             if (version !== aiConfigVersion || activePage !== "settings") return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) settingsCanWrite = false;
             aiConfigUncertain = true;
-            setText(status, "Could not confirm saving. Your draft is retained. Reload saved settings before retrying.");
+            setText(status, t("Could not confirm saving. Your draft is retained. Reload saved settings before retrying."));
           } finally {
             aiConfigBusy = false;
             updateAliasControls();
@@ -2220,7 +2255,7 @@ enum WebUIRoutes {
           const version = ++sourceSettingsVersion;
           const accessVersion = settingsAccessVersion;
           const status = document.getElementById("source-settings-status");
-          setText(status, "Loading source settings…");
+          setText(status, t("Loading source settings…"));
           try {
             const result = await api("GET", "/web/api/settings/sources");
             if (version !== sourceSettingsVersion || accessVersion !== settingsAccessVersion || activePage !== "settings") return;
@@ -2232,7 +2267,7 @@ enum WebUIRoutes {
             setText(rows, "");
             result.sources.forEach(function (item) {
               const row = document.createElement("tr");
-              [sourceLabel(item.key), item.enabled ? "Enabled" : "Disabled"].forEach(function (text) {
+              [sourceLabel(item.key), item.enabled ? t("Enabled") : t("Disabled")].forEach(function (text) {
                 const cell = document.createElement("td");
                 setText(cell, text);
                 row.appendChild(cell);
@@ -2240,8 +2275,8 @@ enum WebUIRoutes {
               const action = document.createElement("td");
               const button = document.createElement("button");
               button.type = "button";
-              setText(button, item.enabled ? "Disable" : "Enable");
-              button.setAttribute("aria-label", (item.enabled ? "Disable " : "Enable ") + sourceLabel(item.key));
+              setText(button, item.enabled ? t("Disable") : t("Enable"));
+              button.setAttribute("aria-label", (item.enabled ? t("Disable ") : t("Enable ")) + sourceLabel(item.key));
               button.addEventListener("click", function () { setWebSourceEnabled(item.key, !item.enabled); });
               action.appendChild(button);
               row.appendChild(action);
@@ -2249,15 +2284,15 @@ enum WebUIRoutes {
               sourceSettingsRows.set(item.key, { item: item, button: button });
             });
             document.getElementById("source-settings").hidden = false;
-            setText(status, result.sources.length ? "" : "No sources reported.");
+            setText(status, result.sources.length ? "" : t("No sources reported."));
             if (!settingsSnapshot && result.sources.length && result.sources.every(function (item) { return !item.enabled; })) {
-              setText(document.getElementById("settings-status"), "All sources are disabled. Enable a source below to show sessions.");
-              setStatus("signed in");
+              setText(document.getElementById("settings-status"), t("All sources are disabled. Enable a source below to show sessions."));
+              setStatus(t("signed in"));
             }
             updateAliasControls();
           } catch (error) {
             if (version === sourceSettingsVersion && accessVersion === settingsAccessVersion && activePage === "settings") {
-              setText(status, "Source settings unavailable. Refresh to retry.");
+              setText(status, t("Source settings unavailable. Refresh to retry."));
             }
           }
         }
@@ -2267,7 +2302,7 @@ enum WebUIRoutes {
           settingsWriteBusy = true;
           updateAliasControls();
           const status = document.getElementById("source-write-status");
-          setText(status, "Saving source setting…");
+          setText(status, t("Saving source setting…"));
           try {
             const result = await api("POST", "/web/api/settings/sources", JSON.stringify({ source: source, enabled: enabled }));
             if (token !== requestEpoch || activePage !== "settings") return;
@@ -2275,14 +2310,14 @@ enum WebUIRoutes {
             const refreshed = loadSettings(false);
             const refreshEpoch = requestEpoch;
             await refreshed;
-            if (refreshEpoch === requestEpoch && activePage === "settings") setText(status, sourceLabel(source) + (enabled ? " enabled." : " disabled."));
+            if (refreshEpoch === requestEpoch && activePage === "settings") setText(status, t(enabled ? "{0} enabled." : "{0} disabled.", [sourceLabel(source)]));
           } catch (error) {
             if (token !== requestEpoch || activePage !== "settings") return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) {
               settingsCanWrite = false;
-              setText(status, "Editor access required. Sign in again to edit.");
-            } else setText(status, "Could not confirm the change. Refresh settings before retrying.");
+              setText(status, t("Editor access required. Sign in again to edit."));
+            } else setText(status, t("Could not confirm the change. Refresh settings before retrying."));
           } finally {
             settingsWriteBusy = false;
             updateAliasControls();
@@ -2305,7 +2340,7 @@ enum WebUIRoutes {
           const params = new URLSearchParams({ kind: "project" });
           if (aliasProjectQuery) params.set("query", aliasProjectQuery);
           if (more) { params.set("snapshotId", aliasProjectSnapshot); params.set("cursor", aliasProjectCursor); }
-          setText(status, "Loading projects…");
+          setText(status, t("Loading projects…"));
           document.getElementById("alias-project-more").disabled = true;
           try {
             const page = await api("GET", "/web/api/facets?" + params.toString().replaceAll("+", "%20"));
@@ -2322,9 +2357,9 @@ enum WebUIRoutes {
               select.appendChild(option);
             });
             if (!select.value && aliasProjects.size) select.value = aliasProjects.keys().next().value;
-            setText(status, aliasProjects.size ? "" : "No matching projects.");
+            setText(status, aliasProjects.size ? "" : t("No matching projects."));
           } catch (error) {
-            if (version === aliasProjectVersion && accessVersion === settingsAccessVersion && activePage === "settings") setText(status, "Projects unavailable. Find again to retry.");
+            if (version === aliasProjectVersion && accessVersion === settingsAccessVersion && activePage === "settings") setText(status, t("Projects unavailable. Find again to retry."));
           } finally {
             if (version === aliasProjectVersion && accessVersion === settingsAccessVersion) {
               document.getElementById("alias-project-more").hidden = !aliasProjectCursor;
@@ -2336,7 +2371,7 @@ enum WebUIRoutes {
           const alias = document.getElementById("alias-text").value.trim();
           const canonical = document.getElementById("alias-canonical").value;
           if (!alias || !aliasProjects.has(canonical)) {
-            setText(document.getElementById("alias-status"), "Enter an old name or path and select a destination project.");
+            setText(document.getElementById("alias-status"), t("Enter an old name or path and select a destination project."));
             return;
           }
           await mutateAlias("add", { alias: alias, canonical: canonical });
@@ -2347,7 +2382,7 @@ enum WebUIRoutes {
           settingsWriteBusy = true;
           updateAliasControls();
           const status = document.getElementById("alias-status");
-          setText(status, "Saving…");
+          setText(status, t("Saving…"));
           try {
             const result = await api(action === "add" ? "POST" : "DELETE", "/web/api/settings/aliases", JSON.stringify(pair));
             if (token !== requestEpoch || activePage !== "settings") return;
@@ -2355,14 +2390,14 @@ enum WebUIRoutes {
             const refreshed = loadSettings(false);
             const refreshEpoch = requestEpoch;
             await refreshed;
-            if (refreshEpoch === requestEpoch && activePage === "settings") setText(status, result.changed ? (action === "add" ? "Alias added." : "Alias removed.") : "No change was needed.");
+            if (refreshEpoch === requestEpoch && activePage === "settings") setText(status, result.changed ? (action === "add" ? t("Alias added.") : t("Alias removed.")) : t("No change was needed."));
           } catch (error) {
             if (token !== requestEpoch || activePage !== "settings") return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) {
               settingsCanWrite = false;
-              setText(status, "Editor access required. Sign in again to edit.");
-            } else setText(status, "Could not confirm the change. Refresh settings before retrying.");
+              setText(status, t("Editor access required. Sign in again to edit."));
+            } else setText(status, t("Could not confirm the change. Refresh settings before retrying."));
           } finally {
             settingsWriteBusy = false;
             updateAliasControls();
@@ -2380,26 +2415,26 @@ enum WebUIRoutes {
           }
           return result;
         }
-        function chartAmount(value, currency) { return value === null ? "Not reported" : costValue(value, currency ? "costUsd" : "count"); }
+        function chartAmount(value, currency) { return value === null ? t("Not reported") : costValue(value, currency ? "costUsd" : "count"); }
         function renderChart(id, title, data, options) {
           const node = document.getElementById(id); setText(node, ""); node.className = "chart";
           const opts = options || {}, currency = !!opts.currency;
-          let rows = data.map(function (item) { return {label:String(item.label == null ? "Not reported" : item.label), value:chartNumber(item.value), source:item.source}; });
+          let rows = data.map(function (item) { return {label:String(item.label == null ? t("Not reported") : item.label), value:chartNumber(item.value), source:item.source}; });
           const total = rows.reduce(function (sum, row) { return sum + (row.value === null ? 0 : row.value); }, 0);
           const unknown = rows.filter(function (row) { return row.value === null; }).length;
-          const summary = chartAmount(total, currency) + " loaded" + (chartNumber(opts.fullTotal) === null ? "" : " / " + chartAmount(opts.fullTotal, currency) + " full") + " · " + (opts.coverage || "Loaded rows") + (unknown ? " · " + unknown + " values not reported" : "");
+          const summary = t("{0} loaded", [chartAmount(total, currency)]) + (chartNumber(opts.fullTotal) === null ? "" : t(" / {0} full", [chartAmount(opts.fullTotal, currency)])) + " · " + (opts.coverage || t("Loaded rows")) + (unknown ? t(" · {0} values not reported", [unknown]) : "");
           const heading = document.createElement("h3"), note = document.createElement("p");
           setText(heading, title); setText(note, summary); node.appendChild(heading); node.appendChild(note);
-          if (!rows.length) { const empty = document.createElement("p"); setText(empty, "No observations for this scope."); node.appendChild(empty); return; }
+          if (!rows.length) { const empty = document.createElement("p"); setText(empty, t("No observations for this scope.")); node.appendChild(empty); return; }
           if (!opts.columns) {
             rows.sort(function (a,b) { return (b.value || 0) - (a.value || 0); });
             if (rows.length > 12) {
               const rest = rows.slice(12); rows = rows.slice(0, 12);
-              rows.push({label:"Other loaded groups", value:rest.every(function (row) { return row.value !== null; }) ? rest.reduce(function (n,row) { return n + row.value; },0) : null});
+              rows.push({label:t("Other loaded groups"), value:rest.every(function (row) { return row.value !== null; }) ? rest.reduce(function (n,row) { return n + row.value; },0) : null});
               // Keep unknown rows distinct so aggregation cannot conceal reported observations.
               if (rest.some(function (row) { return row.value === null; })) {
                 rows[12].value = rest.reduce(function (n,row) { return n + (row.value || 0); },0);
-                rows.push({label:"Other unreported groups", value:null});
+                rows.push({label:t("Other unreported groups"), value:null});
               }
             }
           }
@@ -2415,7 +2450,7 @@ enum WebUIRoutes {
             });
             node.appendChild(image);
             const axis = document.createElement("p"); axis.className = "chart-dates";
-            setText(axis, rows[0].label + " → " + rows[rows.length - 1].label + " · Peak " + chartAmount(Math.max(0,...rows.map(function (row) { return row.value || 0; })),currency)); node.appendChild(axis);
+            setText(axis, t("{0} → {1} · Peak {2}", [rows[0].label, rows[rows.length - 1].label, chartAmount(Math.max(0,...rows.map(function (row) { return row.value || 0; })),currency)])); node.appendChild(axis);
           } else {
             rows.forEach(function (row) {
               const line = document.createElement("div"); line.className = "ranked-row " + sourceClass(row.source);
@@ -2426,10 +2461,10 @@ enum WebUIRoutes {
               const bar = svg("rect", {width:(row.value || 0) / max * 720,height:12,class:"chart-bar"}); bar.dataset.value = String(row.value || 0); image.appendChild(bar); line.appendChild(image); node.appendChild(line);
             });
           }
-          if (!total) { const empty = document.createElement("p"); setText(empty, unknown === data.length ? "No numeric observations reported." : "All reported values are zero."); node.appendChild(empty); }
-          const details = document.createElement("details"), caption = document.createElement("summary"); setText(caption, "Table · chart values"); details.appendChild(caption);
-          const table = document.createElement("table"); table.setAttribute("aria-label", title + " chart values");
-          const header = document.createElement("tr"); ["Group", currency ? "USD" : "Value"].forEach(function (value) { const th = document.createElement("th"); th.setAttribute("scope","col"); setText(th,value); header.appendChild(th); }); table.appendChild(header);
+          if (!total) { const empty = document.createElement("p"); setText(empty, unknown === data.length ? t("No numeric observations reported.") : t("All reported values are zero.")); node.appendChild(empty); }
+          const details = document.createElement("details"), caption = document.createElement("summary"); setText(caption, t("Table · chart values")); details.appendChild(caption);
+          const table = document.createElement("table"); table.setAttribute("aria-label", t("{0} chart values", [title]));
+          const header = document.createElement("tr"); [t("Group"), currency ? "USD" : t("Value")].forEach(function (value) { const th = document.createElement("th"); th.setAttribute("scope","col"); setText(th,value); header.appendChild(th); }); table.appendChild(header);
           rows.forEach(function (row) { const tr = document.createElement("tr"); [row.label, chartAmount(row.value,currency)].forEach(function (value) { const td = document.createElement("td"); setText(td,value); tr.appendChild(td); }); table.appendChild(tr); });
           details.appendChild(table); node.appendChild(details);
         }
@@ -2437,24 +2472,24 @@ enum WebUIRoutes {
           chartRows[name].push(...items);
           const columns = groupBy === "day" || groupBy === "week";
           let rows = chartRows[name].map(function (item) { return {label:groupBy === "source" ? sourceLabel(item.key) : groupBy === "hourOfWeek" ? hourOfWeekLabel(item.key) : item.label || item.key, value:item[field], source:groupBy === "source" ? item.key : null}; });
-          let bins = columns ? " · returned buckets only" : "";
+          let bins = columns ? t(" · returned buckets only") : "";
           if (columns) rows.sort(function (a,b) { return String(a.label).localeCompare(String(b.label)); });
           if (groupBy === "day" && !cursor && rows.length && chartRows[name].every(function (item) { return /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(item.key); })) {
             const keys = chartRows[name].map(function (item) { return item.key; }).sort();
             const days = Math.round((Date.parse(keys[keys.length - 1]) - Date.parse(keys[0])) / 86400000) + 1;
-            if (days > 0 && days <= 366) { rows = dailySeries(chartRows[name],field,keys[keys.length - 1],days); bins = " · calendar dates (zero-filled)"; }
+            if (days > 0 && days <= 366) { rows = dailySeries(chartRows[name],field,keys[keys.length - 1],days); bins = t(" · calendar dates (zero-filled)"); }
           }
-          renderChart(name + "-chart", title, rows, {columns:columns, currency:field === "costUsd", fullTotal:fullTotal, coverage:(cursor ? (chartRows[name].length >= 5000 ? "Partial: 5,000-row cap; narrow filters" : "Partial: load more for remaining groups") : "All returned groups") + " · " + chartRows[name].length + " loaded rows" + bins});
+          renderChart(name + "-chart", title, rows, {columns:columns, currency:field === "costUsd", fullTotal:fullTotal, coverage:t("{0} · {1} loaded rows{2}", [cursor ? (chartRows[name].length >= 5000 ? t("Partial: 5,000-row cap; narrow filters") : t("Partial: load more for remaining groups")) : t("All returned groups"), chartRows[name].length, bins])});
         }
         function renderUsageChart(items) {
           const node = document.getElementById("usage-chart"); setText(node, ""); node.className = "chart";
-          const title = document.createElement("h3"); setText(title, "Recorded usage · separate units, not additive"); node.appendChild(title);
-          if (!items.length) { const empty = document.createElement("p"); setText(empty, "No recorded usage observations."); node.appendChild(empty); }
+          const title = document.createElement("h3"); setText(title, t("Recorded usage · separate units, not additive")); node.appendChild(title);
+          if (!items.length) { const empty = document.createElement("p"); setText(empty, t("No recorded usage observations.")); node.appendChild(empty); }
           items.forEach(function (item) {
             const value = chartNumber(item.value), limit = chartNumber(item.limit), percent = value !== null && limit !== null && limit > 0 ? value / limit * 100 : null;
             const row = document.createElement("div"); row.className = "usage-meter"; row.dataset.tone = percent !== null && percent >= 90 ? "danger" : percent !== null && percent >= 70 ? "warn" : "ok";
             const label = document.createElement("p");
-            const text = sourceLabel(item.source) + " · " + item.metric + ": " + chartAmount(value,false) + (item.unit ? " " + item.unit : "") + (limit === null ? " · limit not reported" : " / " + chartAmount(limit,false)) + (percent === null ? " · ratio unavailable" : " · " + percent.toFixed(1) + "%") + " · " + (item.basis === "indexedSessions" ? "Indexed sessions (estimate)" : "Reported");
+            const text = sourceLabel(item.source) + " · " + item.metric + ": " + chartAmount(value,false) + (item.unit ? " " + item.unit : "") + (limit === null ? t(" · limit not reported") : " / " + chartAmount(limit,false)) + (percent === null ? t(" · ratio unavailable") : " · " + percent.toFixed(1) + "%") + " · " + (item.basis === "indexedSessions" ? t("Indexed sessions (estimate)") : t("Reported"));
             setText(label,text); row.appendChild(label);
             const image = svg("svg", {viewBox:"0 0 720 16", preserveAspectRatio:"none", role:"img", "aria-label":text});
             const tip = svg("title"); setText(tip,text); image.appendChild(tip);
@@ -2489,23 +2524,23 @@ enum WebUIRoutes {
         }
         function dashboardKpis(result, end, cost) {
           const container = document.getElementById("dashboard-kpis");
-          const fields = cost ? [["costUsd","Priced cost (USD)"]] : [["sessionCount","Sessions"],["messageCount","Messages"],["userMessageCount","User messages"],["assistantMessageCount","Assistant messages"]];
+          const fields = cost ? [["costUsd",t("Priced cost (USD)")]] : [["sessionCount",t("Sessions")],["messageCount",t("Messages")],["userMessageCount",t("User messages")],["assistantMessageCount",t("Assistant messages")]];
           fields.forEach(function (field) {
             const tile = document.createElement("div"); tile.className = "kpi";
             const label = document.createElement("span"), value = document.createElement("strong"), note = document.createElement("span");
             setText(label,field[1]); setText(value,chartAmount(chartNumber(result.page.totals[field[0]]),cost));
-            setText(note,"Full range · " + result.page.timeZone + (result.complete ? "" : " · partial sparkline"));
+            setText(note,t("Full range · {0}{1}", [result.page.timeZone, result.complete ? "" : t(" · partial sparkline")]));
             tile.appendChild(label); tile.appendChild(value); tile.appendChild(note);
             const rows = result.complete ? dailySeries(result.items,field[0],end,30) : result.items.slice().sort(function (a,b) { return a.key.localeCompare(b.key); }).map(function (item) { return {label:item.key,value:chartNumber(item[field[0]])}; });
             const max = Math.max(1,...rows.map(function (row) { return row.value || 0; }));
-            const image = svg("svg", {viewBox:"0 0 180 32", role:"img","aria-label":field[1] + " daily trend, " + chartAmount(chartNumber(result.page.totals[field[0]]),cost) + " full range · " + (result.complete ? "30 dates" : "loaded dates only")});
-            const tip = svg("title"); setText(tip,field[1] + " · daily values in the accompanying table"); image.appendChild(tip);
+            const image = svg("svg", {viewBox:"0 0 180 32", role:"img","aria-label":t("{0} daily trend, {1} full range · {2}", [field[1], chartAmount(chartNumber(result.page.totals[field[0]]),cost), result.complete ? t("30 dates") : t("loaded dates only")])});
+            const tip = svg("title"); setText(tip,t("{0} · daily values in the accompanying table", [field[1]])); image.appendChild(tip);
             // Missing numeric metrics break the sparkline instead of fabricating zero observations.
             rows.forEach(function (row,i) { if (row.value !== null) image.appendChild(svg("rect", {x:i * 180 / rows.length, y:30 - (row.value || 0) / max * 28,width:Math.max(1,180 / rows.length - 1),height:(row.value || 0) / max * 28,fill:"currentColor"})); });
             tile.appendChild(image);
             const details = document.createElement("details"), summary = document.createElement("summary"), table = document.createElement("table");
-            setText(summary,"Daily values"); details.appendChild(summary); table.setAttribute("aria-label",field[1] + " daily values");
-            const header = document.createElement("tr"); ["Date",cost ? "USD" : "Value"].forEach(function (text) { const cell = document.createElement("th"); cell.setAttribute("scope","col"); setText(cell,text); header.appendChild(cell); }); table.appendChild(header);
+            setText(summary,t("Daily values")); details.appendChild(summary); table.setAttribute("aria-label",t("{0} daily values", [field[1]]));
+            const header = document.createElement("tr"); [t("Date"),cost ? "USD" : t("Value")].forEach(function (text) { const cell = document.createElement("th"); cell.setAttribute("scope","col"); setText(cell,text); header.appendChild(cell); }); table.appendChild(header);
             rows.forEach(function (row) { const tr = document.createElement("tr"); [row.label,chartAmount(row.value,cost)].forEach(function (text) { const cell = document.createElement("td"); setText(cell,text); tr.appendChild(cell); }); table.appendChild(tr); });
             details.appendChild(table); tile.appendChild(details); container.appendChild(tile);
           });
@@ -2517,18 +2552,18 @@ enum WebUIRoutes {
           const today = new Date(), end = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
           const since = dailySeries([],"value",end,30)[0].label;
           const health = document.getElementById("dashboard-health");
-          setText(health, overviewStreams === null ? "Stream observations unavailable. Visit Health to retry; no duplicate overview walk is started here." : overviewStreams.length + " streams · reused sign-in/Health snapshot · Observed: " + healthTime(overviewObservedAt) + " · no historical health data");
+          setText(health, overviewStreams === null ? t("Stream observations unavailable. Visit Health to retry; no duplicate overview walk is started here.") : t("{0} streams · reused sign-in/Health snapshot · Observed: {1} · no historical health data", [overviewStreams.length, healthTime(overviewObservedAt)]));
           let activityResult = null, costResult = null;
-          const widgets = [["activity","/web/api/stats","day","sessionCount","Daily sessions"],["sources","/web/api/stats","source","sessionCount","Sessions by source"],["projects","/web/api/stats","project","sessionCount","Sessions by project"],["cost","/web/api/costs","day","costUsd","Daily priced cost (USD)"]];
+          const widgets = [["activity","/web/api/stats","day","sessionCount",t("Daily sessions")],["sources","/web/api/stats","source","sessionCount",t("Sessions by source")],["projects","/web/api/stats","project","sessionCount",t("Sessions by project")],["cost","/web/api/costs","day","costUsd",t("Daily priced cost (USD)")]];
           await Promise.all(widgets.map(async function (widget) {
-            const node = document.getElementById("dashboard-" + widget[0]); setText(node,"Loading " + widget[4].toLowerCase() + "…");
+            const node = document.getElementById("dashboard-" + widget[0]); setText(node,t("Loading {0}…", [widget[4].toLowerCase()]));
             try {
               const result = await dashboardRead(widget[1],{groupBy:widget[2], since:since, until:end},token,version);
               if (!result || token !== requestEpoch || version !== dashboardVersion || activePage !== "dashboard") return;
               const currency = widget[3] === "costUsd", daily = widget[2] === "day";
               const rows = daily && result.complete ? dailySeries(result.items,widget[3],end,30) : result.items.map(function (item) { return {label:widget[2] === "source" ? sourceLabel(item.key) : item.label || item.key, value:item[widget[3]], source:widget[2] === "source" ? item.key : null}; });
               if (daily) rows.sort(function (a,b) {return a.label.localeCompare(b.label);});
-              renderChart("dashboard-" + widget[0],widget[4],rows,{columns:daily,currency:currency,fullTotal:result.page.totals[widget[3]],coverage:(result.complete ? "All groups" : "Partial: 10-page cap; absent days unknown, not zero-filled") + " · " + since + " → " + end + " · " + result.page.timeZone});
+              renderChart("dashboard-" + widget[0],widget[4],rows,{columns:daily,currency:currency,fullTotal:result.page.totals[widget[3]],coverage:(result.complete ? t("All groups") : t("Partial: 10-page cap; absent days unknown, not zero-filled")) + " · " + since + " → " + end + " · " + result.page.timeZone});
               if (widget[0] === "activity" || currency) {
                 if (currency) costResult = result; else activityResult = result;
                 setText(document.getElementById("dashboard-kpis"), "");
@@ -2536,10 +2571,10 @@ enum WebUIRoutes {
                 if (costResult) dashboardKpis(costResult,end,true);
               }
               if (currency) {
-                const note = document.createElement("p"); setText(note,"Unpriced sessions: " + costValue(result.page.unpricedUnattributedSessions,"count") + " without attribution; " + costValue(result.page.unpricedNoPriceSessions,"count") + " without a matching price. Unpriced tokens: " + costValue(result.page.unpricedUnattributedTokens,"count") + " unattributed; " + costValue(result.page.unpricedNoPriceTokens,"count") + " without a matching price."); node.appendChild(note);
+                const note = document.createElement("p"); setText(note,t("Unpriced sessions: {0} without attribution; {1} without a matching price. Unpriced tokens: {2} unattributed; {3} without a matching price.", [costValue(result.page.unpricedUnattributedSessions,"count"), costValue(result.page.unpricedNoPriceSessions,"count"), costValue(result.page.unpricedUnattributedTokens,"count"), costValue(result.page.unpricedNoPriceTokens,"count")])); node.appendChild(note);
               }
             } catch (error) {
-              if (token === requestEpoch && version === dashboardVersion && activePage === "dashboard") { node.className = "chart"; setText(node,widget[4] + " unavailable. Refresh dashboard to retry."); }
+              if (token === requestEpoch && version === dashboardVersion && activePage === "dashboard") { node.className = "chart"; setText(node,t("{0} unavailable. Refresh dashboard to retry.", [widget[4]])); }
             }
           }));
         }
@@ -2566,7 +2601,7 @@ enum WebUIRoutes {
         }
         async function loadStatsChoices() {
           const version = ++statsChoicesVersion, epoch = requestEpoch, status = document.getElementById("stats-choices-status");
-          setText(status,"Loading authorized choices…");
+          setText(status,t("Loading authorized choices…"));
           try {
             let complete = true;
             for (const kind of ["source","project"]) {
@@ -2585,13 +2620,13 @@ enum WebUIRoutes {
               }
               const selected = node.value;
               setText(node,"");
-              const all = document.createElement("option"); all.value = ""; setText(all,"All " + (kind === "source" ? "sources" : "projects")); node.appendChild(all);
+              const all = document.createElement("option"); all.value = ""; setText(all,kind === "source" ? t("All sources") : t("All projects")); node.appendChild(all);
               if (selected && !items.has(selected)) items.set(selected,selected);
               items.forEach(function (label,key) { const option = document.createElement("option"); option.value = key; setText(option,kind === "source" ? sourceLabel(key) : label); node.appendChild(option); });
               node.value = selected;
             }
-            setText(status,complete ? "Authorized choices loaded" : "Partial choices: 1,000-group cap. Existing route selection retained.");
-          } catch (error) { if (version === statsChoicesVersion && epoch === requestEpoch) setText(status,"Choices unavailable. Retry loading choices."); }
+            setText(status,complete ? t("Authorized choices loaded") : t("Partial choices: 1,000-group cap. Existing route selection retained."));
+          } catch (error) { if (version === statsChoicesVersion && epoch === requestEpoch) setText(status,t("Choices unavailable. Retry loading choices.")); }
         }
         function choiceLabel(id, value) {
           if (!value) return "all";
@@ -2599,18 +2634,18 @@ enum WebUIRoutes {
           return option && option.textContent ? option.textContent : value;
         }
         function hourOfWeekLabel(key) {
-          if (key === "u.date") return "Unknown start date";
+          if (key === "u.date") return t("Unknown start date");
           const match = /^h[.]([0-6])[.](0[0-9]|1[0-9]|2[0-3])$/.exec(key);
-          return match ? ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][Number(match[1])] + " " + match[2] + ":00" : key;
+          return match ? [t("Mon"),t("Tue"),t("Wed"),t("Thu"),t("Fri"),t("Sat"),t("Sun")][Number(match[1])] + " " + match[2] + ":00" : key;
         }
         function renderHourOfWeek(id, items, timeZone, complete, total, scope) {
           const node = document.getElementById(id); setText(node,""); node.className = "chart";
-          const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], bins = new Map(), unknown = items.find(function (item) { return item.key === "u.date"; });
+          const days = [t("Mon"),t("Tue"),t("Wed"),t("Thu"),t("Fri"),t("Sat"),t("Sun")], bins = new Map(), unknown = items.find(function (item) { return item.key === "u.date"; });
           items.forEach(function (item) { if (/^h[.][0-6][.](0[0-9]|1[0-9]|2[0-3])$/.test(item.key) && Number.isSafeInteger(item.sessionCount) && item.sessionCount >= 0) bins.set(item.key,item.sessionCount); });
           const full = complete && bins.size === 168, title = document.createElement("h3"), note = document.createElement("p");
-          setText(title,"Session starts by weekday / hour"); node.appendChild(title);
-          setText(note,(full ? "Complete: 168 bins" : "Partial: " + bins.size + "/168 bins loaded; missing bins unknown") + " · " + timeZone + " · " + chartAmount(total,false) + (total === 1 ? " session" : " sessions") + " in scope · Unknown start dates: " + (unknown ? unknown.sessionCount : complete ? "0" : "not yet known") + ". Counts starts, not work duration or message activity. " + (scope || "All start dates · agents hidden · all sources/projects · includes lightweight sessions")); node.appendChild(note);
-          const image = svg("svg",{viewBox:"0 0 780 260",role:"img","aria-label":"Session starts, Monday first, server timezone " + timeZone + (full ? ", complete" : ", partial")});
+          setText(title,t("Session starts by weekday / hour")); node.appendChild(title);
+          setText(note,t("{0} · {1} · {2}{3} in scope · Unknown start dates: {4}. Counts starts, not work duration or message activity. {5}", [full ? t("Complete: 168 bins") : t("Partial: {0}/168 bins loaded; missing bins unknown", [bins.size]), timeZone, chartAmount(total,false), total === 1 ? t(" session") : t(" sessions"), unknown ? unknown.sessionCount : complete ? "0" : t("not yet known"), scope || t("All start dates · agents hidden · all sources/projects · includes lightweight sessions")])); node.appendChild(note);
+          const image = svg("svg",{viewBox:"0 0 780 260",role:"img","aria-label":t("Session starts, Monday first, server timezone {0}{1}", [timeZone, full ? t(", complete") : t(", partial")])});
           const maximum = Math.max(1,...Array.from(bins.values()));
           for (let hour = 0; hour < 24; hour += 3) { const text = svg("text",{x:68+hour*29,y:18,fill:"var(--text)","font-size":13}); setText(text,String(hour).padStart(2,"0")); image.appendChild(text); }
           days.forEach(function (day,d) {
@@ -2619,26 +2654,26 @@ enum WebUIRoutes {
               const key = "h." + d + "." + String(hour).padStart(2,"0");
               if (!bins.has(key)) continue; // Unloaded is never fabricated as zero.
               const value = bins.get(key), rect = svg("rect",{x:64+hour*29,y:28+d*29,width:25,height:25,rx:3,fill:value ? "var(--accent)" : "var(--line)","fill-opacity":value ? 0.3+0.7*value/maximum : 1,"data-value":value,"data-key":key});
-              const tip = svg("title"); setText(tip,day + " " + String(hour).padStart(2,"0") + ":00 · " + value + " session starts"); rect.appendChild(tip); image.appendChild(rect);
+              const tip = svg("title"); setText(tip,t("{0} {1}:00 · {2} session starts", [day, String(hour).padStart(2,"0"), value])); rect.appendChild(tip); image.appendChild(rect);
             }
           }); node.appendChild(image);
-          const legend = document.createElement("p"); setText(legend,"Blank: not loaded · Neutral: zero starts · Accent intensity: fewer → more starts. Exact counts are available in the data table."); node.appendChild(legend);
+          const legend = document.createElement("p"); setText(legend,t("Blank: not loaded · Neutral: zero starts · Accent intensity: fewer → more starts. Exact counts are available in the data table.")); node.appendChild(legend);
         }
         async function loadDashboardHours() {
           if (activePage !== "dashboard") return;
           const epoch = requestEpoch, version = dashboardVersion, hoursVersion = ++dashboardHoursVersion, node = document.getElementById("dashboard-hours");
-          setText(node,"Loading session starts…");
+          setText(node,t("Loading session starts…"));
           try {
             const result = await dashboardRead("/web/api/stats",{groupBy:"hourOfWeek"},epoch,version);
             if (hoursVersion !== dashboardHoursVersion) return;
             if (result && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") {
               renderHourOfWeek("dashboard-hours",result.items,result.page.timeZone,result.complete,result.page.totals.sessionCount);
               const details = document.createElement("details"), summary = document.createElement("summary"), table = document.createElement("table");
-              setText(summary,"Loaded hourly values"); details.appendChild(summary);
+              setText(summary,t("Loaded hourly values")); details.appendChild(summary);
               result.items.forEach(function (item) { const row = document.createElement("tr"); [hourOfWeekLabel(item.key),String(item.sessionCount)].forEach(function (value) { const cell = document.createElement("td"); setText(cell,value); row.appendChild(cell); }); table.appendChild(row); });
               details.appendChild(table); node.appendChild(details);
             }
-          } catch (error) { if (hoursVersion === dashboardHoursVersion && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") setText(node,"Session-start heatmap unavailable. Older servers may not support hourOfWeek. Daily charts remain available."); }
+          } catch (error) { if (hoursVersion === dashboardHoursVersion && epoch === requestEpoch && version === dashboardVersion && activePage === "dashboard") setText(node,t("Session-start heatmap unavailable. Older servers may not support hourOfWeek. Daily charts remain available.")); }
         }
         function clearStats() {
           chartRows.stats = []; setText(document.getElementById("stats-chart"), "");
@@ -2674,7 +2709,7 @@ enum WebUIRoutes {
             if (document.getElementById("stats-noise").checked) params.set("excludeNoise", "true");
             statsFilters = params.toString();
           }
-          setText(status, "Loading…");
+          setText(status, t("Loading…"));
           moreButton.disabled = true;
           try {
             const page = await api("GET", "/web/api/stats?" + params.toString());
@@ -2688,9 +2723,9 @@ enum WebUIRoutes {
             statsCursor = page.nextCursor || "";
             if (chartRows.stats.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             statsTotals = page.totals;
-            updateChartRows("stats", page.items, "Session counts", "sessionCount", page.totals.sessionCount, statsCursor, page.groupBy);
+            updateChartRows("stats", page.items, t("Session counts"), "sessionCount", page.totals.sessionCount, statsCursor, page.groupBy);
             if (page.groupBy === "hourOfWeek") renderHourOfWeek("stats-chart",chartRows.stats,page.timeZone,!statsCursor,page.totals.sessionCount,
-              "Start dates: " + (params.get("since") || "unbounded") + " → " + (params.get("until") || "unbounded") + " · agents " + (params.get("agents") || "hide") + " · sources: " + choiceLabel("stats-source",params.get("sources")) + " · projects: " + choiceLabel("stats-project",params.get("projectKeys")) + (params.get("excludeNoise") === "true" ? " · excludes lightweight sessions" : " · includes lightweight sessions"));
+              t("Start dates: {0} → {1} · agents {2} · sources: {3} · projects: {4}{5}", [params.get("since") || t("unbounded"), params.get("until") || t("unbounded"), t(params.get("agents") || "hide"), choiceLabel("stats-source",params.get("sources")), choiceLabel("stats-project",params.get("projectKeys")), params.get("excludeNoise") === "true" ? t(" · excludes lightweight sessions") : t(" · includes lightweight sessions")]));
             const totals = document.getElementById("stats-totals");
             setText(totals, "");
             statsFields.forEach(function (field) {
@@ -2698,7 +2733,7 @@ enum WebUIRoutes {
               const label = document.createElement("dt");
               const value = document.createElement("dd");
               setText(label, field[1]);
-              setText(value, page.totals[field[0]].toLocaleString("en-US"));
+              setText(value, page.totals[field[0]].toLocaleString(uiLocale));
               group.appendChild(label);
               group.appendChild(value);
               totals.appendChild(group);
@@ -2710,15 +2745,15 @@ enum WebUIRoutes {
               row.appendChild(label);
               statsFields.forEach(function (field) {
                 const value = document.createElement("td");
-                setText(value, item[field[0]].toLocaleString("en-US"));
+                setText(value, item[field[0]].toLocaleString(uiLocale));
                 row.appendChild(value);
               });
               document.getElementById("stats-rows").appendChild(row);
             });
-            setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + " · Observed: " + healthTime(page.observedAt));
+            setText(status, t("Grouped by {0} · {1} · Observed: {2}", [groupLabel(page.groupBy), page.timeZone, healthTime(page.observedAt)]));
             moreButton.hidden = !statsCursor || chartRows.stats.length >= 5000;
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Statistics unavailable. This server may not support these options. For legacy settings choose Source/Project/Day/Week, All sources and All projects, then Apply. No filters were silently dropped.");
+            if (token === requestEpoch) setText(status, t("Statistics unavailable. This server may not support these options. For legacy settings choose Source/Project/Day/Week, All sources and All projects, then Apply. No filters were silently dropped."));
           } finally {
             if (token === requestEpoch) moreButton.disabled = false;
           }
@@ -2749,7 +2784,7 @@ enum WebUIRoutes {
           const counts = document.createElement("dl"); counts.className = large ? "stats-totals" : "ai-counts";
           pairs.forEach(function (pair) {
             const label = document.createElement("dt"), value = document.createElement("dd");
-            setText(label, pair[0]); setText(value, typeof pair[1] === "number" ? costValue(pair[1], "value") : pair[1] == null ? "Not reported" : pair[1]);
+            setText(label, pair[0]); setText(value, typeof pair[1] === "number" ? costValue(pair[1], "value") : pair[1] == null ? t("Not reported") : pair[1]);
             const pairNode = large ? document.createElement("div") : counts;
             pairNode.appendChild(label); pairNode.appendChild(value); if (large) counts.appendChild(pairNode);
           }); parent.appendChild(counts);
@@ -2757,14 +2792,14 @@ enum WebUIRoutes {
         function aiCard(item, detail) {
           const card = document.createElement("article"); card.className = "health-card";
           const title = document.createElement("h3"); setText(title, item.caller + " · " + item.operation); card.appendChild(title);
-          const when = document.createElement("p"); when.className = "meta"; setText(when, healthTime(item.at) + " · " + (item.hasError ? "Error" : "Success") + (item.statusCode == null ? "" : " · HTTP " + item.statusCode)); card.appendChild(when);
-          const model = document.createElement("p"); setText(model, item.model || "Model not reported"); card.appendChild(model);
-          aiCounts(card, [["Duration (ms)", item.durationMs], ["Input tokens", item.promptTokens], ["Output tokens", item.completionTokens], ["Total tokens", item.totalTokens]]);
+          const when = document.createElement("p"); when.className = "meta"; setText(when, healthTime(item.at) + " · " + (item.hasError ? t("Error") : t("Success")) + (item.statusCode == null ? "" : " · HTTP " + item.statusCode)); card.appendChild(when);
+          const model = document.createElement("p"); setText(model, item.model || t("Model not reported")); card.appendChild(model);
+          aiCounts(card, [[t("Duration (ms)"), item.durationMs], [t("Input tokens"), item.promptTokens], [t("Output tokens"), item.completionTokens], [t("Total tokens"), item.totalTokens]]);
           if (item.error) { const error = document.createElement("p"); setText(error, item.error); card.appendChild(error); }
           if (detail) {
-            aiCounts(card, [["Call ID", item.id], ["Provider", item.provider], ["Method", item.method], ["Endpoint", item.url], ["Session ID", item.sessionId]]);
+            aiCounts(card, [[t("Call ID"), item.id], [t("Provider"), item.provider], [t("Method"), item.method], [t("Endpoint"), item.url], [t("Session ID"), item.sessionId]]);
           } else {
-            const button = document.createElement("button"); button.type = "button"; setText(button, "View call");
+            const button = document.createElement("button"); button.type = "button"; setText(button, t("View call"));
             button.addEventListener("click", function () { loadAiDetail(item.id); }); card.appendChild(button);
           }
           return card;
@@ -2780,7 +2815,7 @@ enum WebUIRoutes {
               const value = document.getElementById(pair[1]).value.trim(); if (value) params.set(pair[0], value);
             }); aiFilters = params.toString();
           }
-          setText(status, "Loading…"); button.disabled = true;
+          setText(status, t("Loading…")); button.disabled = true;
           try {
             const page = await api("GET", "/web/api/ai/audit?" + params.toString());
             if (token !== requestEpoch) return;
@@ -2792,34 +2827,34 @@ enum WebUIRoutes {
             chartRows.ai.push(...page.items);
             const errors = chartRows.ai.filter(function (item) { return item.hasError === true; }).length;
             const successes = chartRows.ai.filter(function (item) { return item.hasError === false; }).length;
-            renderChart("ai-chart", "Loaded call outcomes", [{label:"Success",value:successes},{label:"Error",value:errors},{label:"Outcome not reported",value:chartRows.ai.length - errors - successes}], {fullTotal:page.total, coverage:(aiCursor ? (chartRows.ai.length >= 5000 ? "Partial history: 5,000-row cap; narrow filters" : "Partial history") : "All matching calls") + " · call-history filters only"});
+            renderChart("ai-chart", t("Loaded call outcomes"), [{label:t("Success"),value:successes},{label:t("Error"),value:errors},{label:t("Outcome not reported"),value:chartRows.ai.length - errors - successes}], {fullTotal:page.total, coverage:t("{0} · call-history filters only", [aiCursor ? (chartRows.ai.length >= 5000 ? t("Partial history: 5,000-row cap; narrow filters") : t("Partial history")) : t("All matching calls")])});
             page.items.forEach(function (item) {
               const row = document.createElement("tr");
-              [item.caller + " · " + item.operation, healthTime(item.at) + " · " + (item.hasError === true ? "Error" : item.hasError === false ? "Success" : "Not reported"), item.model || "Not reported", costValue(item.totalTokens, "tokens")].forEach(function (text) { const cell = document.createElement("td"); setText(cell, text); row.appendChild(cell); });
-              const cell = document.createElement("td"), open = document.createElement("button"); open.type = "button"; setText(open, "View call"); open.addEventListener("click", function () { loadAiDetail(item.id); }); cell.appendChild(open); row.appendChild(cell);
+              [item.caller + " · " + item.operation, healthTime(item.at) + " · " + (item.hasError === true ? t("Error") : item.hasError === false ? t("Success") : t("Not reported")), item.model || t("Not reported"), costValue(item.totalTokens, "tokens")].forEach(function (text) { const cell = document.createElement("td"); setText(cell, text); row.appendChild(cell); });
+              const cell = document.createElement("td"), open = document.createElement("button"); open.type = "button"; setText(open, t("View call")); open.addEventListener("click", function () { loadAiDetail(item.id); }); cell.appendChild(open); row.appendChild(cell);
               document.getElementById("ai-rows").appendChild(row);
             });
-            setText(status, page.total ? plural(page.total, "call") + " · Observed: " + healthTime(page.observedAt) : "No recorded AI calls for these filters.");
+            setText(status, page.total ? t("{0} · Observed: {1}", [plural(page.total, "call"), healthTime(page.observedAt)]) : t("No recorded AI calls for these filters."));
             button.hidden = !aiCursor || chartRows.ai.length >= 5000;
-          } catch (error) { if (token === requestEpoch) setText(status, "AI call history unavailable. Find calls to retry."); }
+          } catch (error) { if (token === requestEpoch) setText(status, t("AI call history unavailable. Find calls to retry.")); }
           finally { if (token === requestEpoch) button.disabled = false; }
         }
         async function loadAiDetail(id) {
           const token = requestEpoch, version = ++aiDetailVersion, detail = document.getElementById("ai-detail");
-          detail.hidden = false; setText(detail, "Loading call…");
+          detail.hidden = false; setText(detail, t("Loading call…"));
           try {
             const page = await api("GET", "/web/api/ai/audit/" + encodeURIComponent(id));
             if (token !== requestEpoch || version !== aiDetailVersion) return;
             if (!page || !page.item || page.item.id !== id) throw new Error("invalid call");
             setText(detail, ""); detail.appendChild(aiCard(page.item, true));
-            aiCounts(detail, [["Request body", page.hasRequestBody ? "Stored" : "Not stored"], ["Response body", page.hasResponseBody ? "Stored" : "Not stored"]]);
-            const note = document.createElement("p"); note.className = "meta"; setText(note, "Message bodies are not included in this view."); detail.appendChild(note);
+            aiCounts(detail, [[t("Request body"), page.hasRequestBody ? t("Stored") : t("Not stored")], [t("Response body"), page.hasResponseBody ? t("Stored") : t("Not stored")]]);
+            const note = document.createElement("p"); note.className = "meta"; setText(note, t("Message bodies are not included in this view.")); detail.appendChild(note);
             if (typeof detail.scrollIntoView === "function") detail.scrollIntoView({ block: "start" });
-          } catch (error) { if (token === requestEpoch && version === aiDetailVersion) setText(detail, "Call unavailable or no longer visible."); }
+          } catch (error) { if (token === requestEpoch && version === aiDetailVersion) setText(detail, t("Call unavailable or no longer visible.")); }
         }
         async function loadAiStats() {
           const token = requestEpoch, version = ++aiStatsVersion, status = document.getElementById("ai-stats-status"), content = document.getElementById("ai-stats");
-          setText(content, ""); setText(status, "Loading statistics…");
+          setText(content, ""); setText(status, t("Loading statistics…"));
           const params = new URLSearchParams();
           ["from", "to"].forEach(function (key) { const value = document.getElementById("ai-" + key).value; if (value) params.set(key, value); });
           try {
@@ -2827,23 +2862,23 @@ enum WebUIRoutes {
             if (token !== requestEpoch || version !== aiStatsVersion) return;
             if (!page || !page.totals || !page.timeRange || !Array.isArray(page.byCaller) || !Array.isArray(page.byModel) || !Array.isArray(page.hourly)) throw new Error("invalid AI statistics");
             const hourly = document.createElement("div"); hourly.id = "ai-hourly-chart"; content.appendChild(hourly);
-            renderChart("ai-hourly-chart", "Hourly AI requests (UTC)", page.hourly.map(function (item) { return {label:item.hour, value:item.requests}; }).sort(function (a,b) {return a.label.localeCompare(b.label);}), {columns:true, fullTotal:page.totals.requests, coverage:"Statistics date range only; independent of call-history filters"});
-            aiCounts(content, [["Requests", page.totals.requests], ["Errors", page.totals.errors], ["Input tokens", page.totals.promptTokens], ["Output tokens", page.totals.completionTokens], ["Average duration (ms)", page.totals.avgDurationMs]], true);
-            [["By caller", page.byCaller], ["By model", page.byModel], ["Hourly (UTC)", page.hourly]].forEach(function (group) {
+            renderChart("ai-hourly-chart", t("Hourly AI requests (UTC)"), page.hourly.map(function (item) { return {label:item.hour, value:item.requests}; }).sort(function (a,b) {return a.label.localeCompare(b.label);}), {columns:true, fullTotal:page.totals.requests, coverage:t("Statistics date range only; independent of call-history filters")});
+            aiCounts(content, [[t("Requests"), page.totals.requests], [t("Errors"), page.totals.errors], [t("Input tokens"), page.totals.promptTokens], [t("Output tokens"), page.totals.completionTokens], [t("Average duration (ms)"), page.totals.avgDurationMs]], true);
+            [[t("By caller"), page.byCaller], [t("By model"), page.byModel], [t("Hourly (UTC)"), page.hourly]].forEach(function (group) {
               const section = document.createElement("details"); section.open = true;
               const heading = document.createElement("summary"); setText(heading, group[0]); section.appendChild(heading);
               const rows = document.createElement("div"); rows.className = "health-grid";
               group[1].forEach(function (item) {
                 const card = document.createElement("article"); card.className = "health-card";
                 const title = document.createElement("h3"); setText(title, item.hour ? item.hour + " UTC" : item.key); card.appendChild(title);
-                const pairs = [["Requests", item.requests]];
-                if (item.hour) pairs.push(["Tokens", item.tokens]);
-                else { if (item.errors != null) pairs.push(["Errors", item.errors]); pairs.push(["Input tokens", item.promptTokens], ["Output tokens", item.completionTokens]); }
+                const pairs = [[t("Requests"), item.requests]];
+                if (item.hour) pairs.push([t("Tokens"), item.tokens]);
+                else { if (item.errors != null) pairs.push([t("Errors"), item.errors]); pairs.push([t("Input tokens"), item.promptTokens], [t("Output tokens"), item.completionTokens]); }
                 aiCounts(card, pairs); rows.appendChild(card);
               }); section.appendChild(rows); content.appendChild(section);
             });
-            setText(status, page.timeRange.from + " → " + page.timeRange.to + " · Date range only");
-          } catch (error) { if (token === requestEpoch && version === aiStatsVersion) setText(status, "AI statistics unavailable. View statistics to retry."); }
+            setText(status, t("{0} → {1} · Date range only", [page.timeRange.from, page.timeRange.to]));
+          } catch (error) { if (token === requestEpoch && version === aiStatsVersion) setText(status, t("AI statistics unavailable. View statistics to retry.")); }
         }
         function clearRepos() {
           chartRows.repos = []; setText(document.getElementById("repos-chart"), "");
@@ -2857,7 +2892,7 @@ enum WebUIRoutes {
           const status = document.getElementById("repos-status"), moreButton = document.getElementById("repos-more");
           const params = new URLSearchParams();
           if (more) { params.set("snapshotId", reposSnapshot); params.set("cursor", reposCursor); }
-          setText(status, "Loading…"); moreButton.disabled = true;
+          setText(status, t("Loading…")); moreButton.disabled = true;
           try {
             const page = await api("GET", "/web/api/repos?" + params.toString());
             if (token !== requestEpoch) return;
@@ -2866,25 +2901,25 @@ enum WebUIRoutes {
                 || (reposTotal !== null && reposTotal !== page.totalRepos)) throw new Error("changed repository observations");
             reposSnapshot = page.snapshotId; reposCursor = page.nextCursor || "";
             if (chartRows.repos.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters"); reposTotal = page.totalRepos;
-            updateChartRows("repos", page.items.map(function (item) { return Object.assign({}, item, { label: item.name }); }), "Sessions per observed repository", "sessionCount", null, reposCursor, "repository");
+            updateChartRows("repos", page.items.map(function (item) { return Object.assign({}, item, { label: item.name }); }), t("Sessions per observed repository"), "sessionCount", null, reposCursor, "repository");
             page.items.forEach(function (item) {
               const card = document.createElement("article"); card.className = "health-card";
               const title = document.createElement("h3"); setText(title, item.name); card.appendChild(title);
-              const branch = document.createElement("p"); branch.className = "meta"; setText(branch, item.branch || "Branch not reported"); card.appendChild(branch);
+              const branch = document.createElement("p"); branch.className = "meta"; setText(branch, item.branch || t("Branch not reported")); card.appendChild(branch);
               const counts = document.createElement("dl");
-              [["Dirty", item.dirtyCount], ["Untracked", item.untrackedCount], ["Unpushed", item.unpushedCount], ["Sessions", item.sessionCount]].forEach(function (pair) {
+              [[t("Dirty"), item.dirtyCount], [t("Untracked"), item.untrackedCount], [t("Unpushed"), item.unpushedCount], [t("Sessions"), item.sessionCount]].forEach(function (pair) {
                 const label = document.createElement("dt"), value = document.createElement("dd"); setText(label, pair[0]); setText(value, costValue(pair[1], "count")); counts.appendChild(label); counts.appendChild(value);
               }); card.appendChild(counts);
-              const commit = document.createElement("p"); setText(commit, item.lastCommitMessage || "Commit not reported"); card.appendChild(commit);
+              const commit = document.createElement("p"); setText(commit, item.lastCommitMessage || t("Commit not reported")); card.appendChild(commit);
               const last = document.createElement("p"); last.className = "meta";
               setText(last, (item.lastCommitHash ? item.lastCommitHash.slice(0, 12) + " · " : "") + healthTime(item.lastCommitAt)); card.appendChild(last);
-              const observed = document.createElement("p"); observed.className = "meta"; setText(observed, "Probed: " + healthTime(item.probedAt)); card.appendChild(observed);
+              const observed = document.createElement("p"); observed.className = "meta"; setText(observed, t("Probed: {0}", [healthTime(item.probedAt)])); card.appendChild(observed);
               document.getElementById("repos-rows").appendChild(card);
             });
-            setText(status, plural(page.totalRepos, "repository", "repositories") + " · Observations from this server’s filesystem.");
+            setText(status, t("{0} · Observations from this server’s filesystem.", [plural(page.totalRepos, "repository", "repositories")]));
             moreButton.hidden = !reposCursor || chartRows.repos.length >= 5000;
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Repository observations unavailable. Reload observations to retry.");
+            if (token === requestEpoch) setText(status, t("Repository observations unavailable. Reload observations to retry."));
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearUsage() {
@@ -2898,7 +2933,7 @@ enum WebUIRoutes {
         async function loadUsage() {
           const token = bumpEpoch(); clearUsage();
           const status = document.getElementById("usage-status"), refresh = document.getElementById("usage-refresh");
-          setText(status, "Loading…"); refresh.disabled = true;
+          setText(status, t("Loading…")); refresh.disabled = true;
           try {
             const page = await api("GET", "/web/api/usage");
             if (token !== requestEpoch) return;
@@ -2908,15 +2943,15 @@ enum WebUIRoutes {
               const row = document.createElement("tr");
               const unit = item.unit ? " " + item.unit : "";
               const amount = costValue(item.value, "value") + unit + (item.limit == null ? "" : " / " + costValue(item.limit, "value") + unit);
-              [sourceLabel(item.source), item.metric, amount, item.basis === "indexedSessions" ? "Indexed sessions" : "Reported",
-               item.status || "Not reported", recordedTime(item.resetAt), recordedTime(item.collectedAt)].forEach(function (value, index) {
-                const cell = document.createElement("td"); cell.setAttribute("data-label", ["Source", "Metric", "Value / limit", "Basis", "Status", "Resets", "Collected"][index]); setText(cell, value); row.appendChild(cell);
+              [sourceLabel(item.source), item.metric, amount, item.basis === "indexedSessions" ? t("Indexed sessions") : t("Reported"),
+               item.status || t("Not reported"), recordedTime(item.resetAt), recordedTime(item.collectedAt)].forEach(function (value, index) {
+                const cell = document.createElement("td"); cell.setAttribute("data-label", [t("Source"), t("Metric"), t("Value / limit"), t("Basis"), t("Status"), t("Resets"), t("Collected")][index]); setText(cell, value); row.appendChild(cell);
               });
               document.getElementById("usage-rows").appendChild(row);
             });
-            setText(status, page.items.length ? "Recorded by this server. Indexed-session metrics are estimates from recorded sessions." : "No recorded usage on this server.");
+            setText(status, page.items.length ? t("Recorded by this server. Indexed-session metrics are estimates from recorded sessions.") : t("No recorded usage on this server."));
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Usage unavailable. Reload observations to retry.");
+            if (token === requestEpoch) setText(status, t("Usage unavailable. Reload observations to retry."));
           } finally { if (token === requestEpoch) refresh.disabled = false; }
         }
         function clearFiles() {
@@ -2940,7 +2975,7 @@ enum WebUIRoutes {
             });
             filesFilters = params.toString();
           }
-          setText(status, "Loading…"); moreButton.disabled = true;
+          setText(status, t("Loading…")); moreButton.disabled = true;
           try {
             const page = await api("GET", "/web/api/file-activity?" + params.toString());
             if (token !== requestEpoch) return;
@@ -2950,19 +2985,19 @@ enum WebUIRoutes {
             filesSnapshot = page.snapshotId; filesCursor = page.nextCursor || "";
             if (chartRows.files.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             filesTotals = {files: page.totalFiles, operations: page.totalOperations};
-            updateChartRows("files", page.items.map(function (item) { return Object.assign({}, item, { operations: item.readCount + item.editCount + item.writeCount }); }), "File operations (reads + edits + writes)", "operations", page.totalOperations, filesCursor, "file");
+            updateChartRows("files", page.items.map(function (item) { return Object.assign({}, item, { operations: item.readCount + item.editCount + item.writeCount }); }), t("File operations (reads + edits + writes)"), "operations", page.totalOperations, filesCursor, "file");
             setText(document.getElementById("files-totals"), plural(page.totalFiles, "file") + " · " + plural(page.totalOperations, "operation"));
             page.items.forEach(function (item) {
               const row = document.createElement("tr"), label = document.createElement("td"); setText(label, item.label); row.appendChild(label);
               ["readCount", "editCount", "writeCount", "sessionCount"].forEach(function (field, index) {
-                const cell = document.createElement("td"); cell.setAttribute("data-label", ["Reads", "Edits", "Writes", "Sessions"][index]); setText(cell, costValue(item[field], field)); row.appendChild(cell);
+                const cell = document.createElement("td"); cell.setAttribute("data-label", [t("Reads"), t("Edits"), t("Writes"), t("Sessions")][index]); setText(cell, costValue(item[field], field)); row.appendChild(cell);
               });
               document.getElementById("files-rows").appendChild(row);
             });
-            setText(status, page.totalFiles ? "Most active files · Observed: " + healthTime(page.observedAt) : "No file activity in this range");
+            setText(status, page.totalFiles ? t("Most active files · Observed: {0}", [healthTime(page.observedAt)]) : t("No file activity in this range"));
             moreButton.hidden = !filesCursor || chartRows.files.length >= 5000;
           } catch (error) {
-            if (token === requestEpoch) setText(status, "File activity unavailable. Apply filters to retry.");
+            if (token === requestEpoch) setText(status, t("File activity unavailable. Apply filters to retry."));
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearTools() {
@@ -2986,7 +3021,7 @@ enum WebUIRoutes {
             });
             toolsFilters = params.toString();
           }
-          setText(status, "Loading…"); moreButton.disabled = true;
+          setText(status, t("Loading…")); moreButton.disabled = true;
           try {
             const page = await api("GET", "/web/api/tool-analytics?" + params.toString());
             if (token !== requestEpoch) return;
@@ -2997,7 +3032,7 @@ enum WebUIRoutes {
             toolsSnapshot = page.snapshotId; toolsCursor = page.nextCursor || "";
             if (chartRows.tools.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
             toolsTotals = {calls: page.totalCalls, groups: page.groupCount};
-            updateChartRows("tools", page.items, "Tool calls", "callCount", page.totalCalls, toolsCursor, page.groupBy);
+            updateChartRows("tools", page.items, t("Tool calls"), "callCount", page.totalCalls, toolsCursor, page.groupBy);
             // Grouped by tool, every row is exactly one tool, so the column carries no information.
             document.getElementById("tools-col-tools").hidden = page.groupBy === "tool";
             setText(document.getElementById("tools-totals"), plural(page.totalCalls, "call") + " · " + plural(page.groupCount, "group"));
@@ -3014,10 +3049,10 @@ enum WebUIRoutes {
               });
               document.getElementById("tools-rows").appendChild(row);
             });
-            setText(status, page.groupCount ? "Grouped by " + page.groupBy + " · Observed: " + healthTime(page.observedAt) : "No tool activity in this range");
+            setText(status, page.groupCount ? t("Grouped by {0} · Observed: {1}", [groupLabel(page.groupBy), healthTime(page.observedAt)]) : t("No tool activity in this range"));
             moreButton.hidden = !toolsCursor || chartRows.tools.length >= 5000;
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Tool activity unavailable. Apply filters to retry.");
+            if (token === requestEpoch) setText(status, t("Tool activity unavailable. Apply filters to retry."));
           } finally { if (token === requestEpoch) moreButton.disabled = false; }
         }
         function clearCosts() {
@@ -3031,8 +3066,8 @@ enum WebUIRoutes {
         }
         function costValue(value, field) {
           return typeof value === "number" && Number.isFinite(value)
-            ? field === "costUsd" ? "$" + value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value.toLocaleString("en-US")
-            : "Not reported";
+            ? field === "costUsd" ? "$" + value.toLocaleString(uiLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value.toLocaleString(uiLocale)
+            : t("Not reported");
         }
         async function loadCosts(more) {
           if (more && !costsCursor) return;
@@ -3051,7 +3086,7 @@ enum WebUIRoutes {
             });
             costsFilters = params.toString();
           }
-          setText(status, "Loading…");
+          setText(status, t("Loading…"));
           moreButton.disabled = true;
           const groups = (async function () {
             try {
@@ -3064,7 +3099,7 @@ enum WebUIRoutes {
               costsCursor = page.nextCursor || "";
               if (chartRows.costs.length + page.items.length > 5000) throw new Error("Chart row limit reached; narrow the filters");
               costsTotals = page.totals;
-              updateChartRows("costs", page.items, "Priced cost (USD)", "costUsd", page.totals.costUsd, costsCursor, page.groupBy);
+              updateChartRows("costs", page.items, t("Priced cost (USD)"), "costUsd", page.totals.costUsd, costsCursor, page.groupBy);
               const totals = document.getElementById("costs-totals");
               setText(totals, "");
               costFields.forEach(function (field) {
@@ -3087,15 +3122,15 @@ enum WebUIRoutes {
                 document.getElementById("costs-rows").appendChild(row);
               });
               const unpriced = [];
-              if (Number.isSafeInteger(page.unpricedUnattributedSessions)) unpriced.push(plural(page.unpricedUnattributedSessions, "session has", "sessions have") + " no model attribution");
-              if (Number.isSafeInteger(page.unpricedNoPriceSessions)) unpriced.push(plural(page.unpricedNoPriceSessions, "session has", "sessions have") + " no matching price");
-              if (Number.isSafeInteger(page.unpricedUnattributedTokens)) unpriced.push(costValue(page.unpricedUnattributedTokens, "tokens") + " unattributed tokens");
-              if (Number.isSafeInteger(page.unpricedNoPriceTokens)) unpriced.push(costValue(page.unpricedNoPriceTokens, "tokens") + " tokens without a price");
-              setText(document.getElementById("costs-unpriced"), unpriced.length ? "Unpriced usage: " + unpriced.join("; ") + "." : "Unpriced usage: not reported.");
-              setText(status, "Grouped by " + page.groupBy + " · " + page.timeZone + (page.totals.sessionCount === 0 ? " · No cost records in this range" : ""));
+              if (Number.isSafeInteger(page.unpricedUnattributedSessions)) unpriced.push(t("{0} no model attribution", [plural(page.unpricedUnattributedSessions, t("session has"), t("sessions have"))]));
+              if (Number.isSafeInteger(page.unpricedNoPriceSessions)) unpriced.push(t("{0} no matching price", [plural(page.unpricedNoPriceSessions, t("session has"), t("sessions have"))]));
+              if (Number.isSafeInteger(page.unpricedUnattributedTokens)) unpriced.push(t("{0} unattributed tokens", [costValue(page.unpricedUnattributedTokens, "tokens")]));
+              if (Number.isSafeInteger(page.unpricedNoPriceTokens)) unpriced.push(t("{0} tokens without a price", [costValue(page.unpricedNoPriceTokens, "tokens")]));
+              setText(document.getElementById("costs-unpriced"), unpriced.length ? t("Unpriced usage: {0}.", [unpriced.join("; ")]) : t("Unpriced usage: not reported."));
+              setText(status, t("Grouped by {0} · {1}{2}", [groupLabel(page.groupBy), page.timeZone, page.totals.sessionCount === 0 ? t(" · No cost records in this range") : ""]));
               moreButton.hidden = !costsCursor || chartRows.costs.length >= 5000;
             } catch (error) {
-              if (token === requestEpoch) setText(status, "Costs unavailable. Apply filters to retry.");
+              if (token === requestEpoch) setText(status, t("Costs unavailable. Apply filters to retry."));
             }
           })();
           const sessions = more ? Promise.resolve() : loadCostSessions(params, token);
@@ -3107,7 +3142,7 @@ enum WebUIRoutes {
           params.delete("groupBy");
           params.set("limit", document.getElementById("costs-limit").value || "20");
           const status = document.getElementById("costs-sessions-status");
-          setText(status, "Loading…");
+          setText(status, t("Loading…"));
           try {
             const page = await api("GET", "/web/api/costs/sessions?" + params.toString());
             if (token !== requestEpoch) return;
@@ -3122,16 +3157,16 @@ enum WebUIRoutes {
               button.addEventListener("click", function () { openDetail(item.session.sessionId, "stats").catch(function () {}); });
               cell.appendChild(button); row.appendChild(cell);
               const model = document.createElement("td");
-              setText(model, item.model || "Not reported"); row.appendChild(model);
+              setText(model, item.model || t("Not reported")); row.appendChild(model);
               costFields.filter(function (field) { return field[0] !== "sessionCount"; }).forEach(function (field) {
                 const value = document.createElement("td");
                 setText(value, costValue(item[field[0]], field[0])); row.appendChild(value);
               });
               document.getElementById("costs-sessions").appendChild(row);
             });
-            setText(status, page.items.length ? "Showing " + page.items.length + " highest-cost sessions" : "No cost records in this range");
+            setText(status, page.items.length ? t("Showing {0} highest-cost sessions", [page.items.length]) : t("No cost records in this range"));
           } catch (error) {
-            if (token === requestEpoch) setText(status, "Session costs unavailable. Apply filters to retry.");
+            if (token === requestEpoch) setText(status, t("Session costs unavailable. Apply filters to retry."));
           }
         }
         function updateSessionMore() {
@@ -3145,8 +3180,8 @@ enum WebUIRoutes {
           // Only paged session rows are hidden; skeleton, empty and error states have no page.
           if (sessionPageSizes.length) Array.from(sessionsNode.children).forEach(function (row, index) { row.hidden = index < start || index >= start + size; });
           const range = size ? (start + 1) + "–" + (start + size) : "";
-          const total = sessionTotal !== null ? sessionTotal.toLocaleString("en-US") : null;
-          setText(document.getElementById("session-page-status"), range ? range + (total !== null ? " of " + total : "") + (sessionTotal === 1 || (sessionTotal === null && size === 1) ? " session" : " sessions") : total === "0" ? "0 sessions" : "");
+          const total = sessionTotal !== null ? sessionTotal.toLocaleString(uiLocale) : null;
+          setText(document.getElementById("session-page-status"), range ? (total !== null ? t("{0} of {1}", [range,total]) : range) + (sessionTotal === 1 || (sessionTotal === null && size === 1) ? t(" session") : t(" sessions")) : total === "0" ? t("0 sessions") : "");
         }
         async function changeSessionPage(direction) {
           if (sessionPagingBusy) return;
@@ -3183,7 +3218,7 @@ enum WebUIRoutes {
           "cursor": "Cursor", "vscode": "VS Code", "antigravity": "Antigravity", "windsurf": "Windsurf", "pi": "Pi", "grok": "Grok"
         };
         function sourceLabel(value) {
-          return sourceLabels[value] || value || "Unknown source";
+          return sourceLabels[value] || value || t("Unknown source");
         }
         function sourceClass(value) {
           return value && /^[a-z0-9-]+$/.test(value) ? "source-" + value : "";
@@ -3294,17 +3329,17 @@ enum WebUIRoutes {
           const status = document.getElementById("session-action-status");
           sessionActionCanWrite = false;
           updateSessionActionControls();
-          setText(status, "Checking edit access…");
+          setText(status, t("Checking edit access…"));
           pending.promise = (async function () {
             try {
               const access = await api("GET", "/web/api/auth");
               if (!current()) return;
               sessionActionCanWrite = !!(access && access.canWrite === true);
-              setText(status, sessionActionCanWrite ? "Uses the configured AI provider and saves the result to this session." : "Read only. Sign in with an editor key to generate content.");
+              setText(status, sessionActionCanWrite ? t("Uses the configured AI provider and saves the result to this session.") : t("Read only. Sign in with an editor key to generate content."));
             } catch (error) {
               if (!current()) return;
               sessionActionCanWrite = false;
-              setText(status, "Edit access unavailable. Reopen this section to retry.");
+              setText(status, t("Edit access unavailable. Reopen this section to retry."));
             } finally {
               if (current()) updateSessionActionControls();
               // An obsolete response must not clear a replacement check or restore its authority.
@@ -3319,7 +3354,7 @@ enum WebUIRoutes {
           const status = document.getElementById("session-action-status");
           sessionActionPending = true;
           updateSessionActionControls();
-          setText(status, "Generating " + action + "…");
+          setText(status, t("Generating {0}…", [t(action)]));
           try {
             const result = await api("POST", "/web/api/sessions/" + encodeURIComponent(id) + "/" + action, JSON.stringify({generation: generation}));
             if (version !== detailExtrasVersion) return;
@@ -3329,16 +3364,16 @@ enum WebUIRoutes {
               const title = detailNode.querySelector("h2");
               if (title) { setText(title, result.displayTitle || result.title); title.title = result.displayTitle || result.title; }
             }
-            setText(status, action === "summary" ? "Summary saved." : "Title saved.");
+            setText(status, action === "summary" ? t("Summary saved.") : t("Title saved."));
           } catch (error) {
             if (version !== detailExtrasVersion) return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) {
               sessionActionCanWrite = false;
-              setText(status, "Editor access required. Sign in again to generate content.");
+              setText(status, t("Editor access required. Sign in again to generate content."));
             } else if (error.status === 503) {
-              setText(status, "Generation unavailable. Check the server's AI provider settings and try again.");
-            } else setText(status, "Could not confirm generation. Reopen the session before retrying.");
+              setText(status, t("Generation unavailable. Check the server's AI provider settings and try again."));
+            } else setText(status, t("Could not confirm generation. Reopen the session before retrying."));
           } finally {
             sessionActionPending = false;
             updateSessionActionControls();
@@ -3350,18 +3385,18 @@ enum WebUIRoutes {
           const status = document.getElementById("batch-title-status");
           batchTitlePending = true;
           updateAliasControls();
-          setText(status, "Starting generation…");
+          setText(status, t("Starting generation…"));
           try {
             const result = await api("POST", "/web/api/titles/regenerate", JSON.stringify({}));
             if (version !== settingsAccessVersion || activePage !== "settings") return;
             if (!result || !["started", "running"].includes(result.status)) throw new Error("invalid generation status");
             const count = Number.isSafeInteger(result.total) && result.total >= 0 ? " (" + plural(result.total, "session") + ")" : "";
-            setText(status, (result.status === "started" ? "Generation started" : "Generation is already running") + count + ". Reload Sessions to see updated titles.");
+            setText(status, t("{0}{1}. Reload Sessions to see updated titles.", [result.status === "started" ? t("Generation started") : t("Generation is already running"), count]));
           } catch (error) {
             if (version !== settingsAccessVersion || activePage !== "settings") return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) settingsCanWrite = false;
-            setText(status, error.status === 503 ? "Generation unavailable. Check the server's AI provider settings." : "Could not confirm generation. Reload Sessions before retrying.");
+            setText(status, error.status === 503 ? t("Generation unavailable. Check the server's AI provider settings.") : t("Could not confirm generation. Reload Sessions before retrying."));
           } finally {
             batchTitlePending = false;
             updateAliasControls();
@@ -3396,7 +3431,7 @@ enum WebUIRoutes {
           const params = new URLSearchParams({ limit: "20" });
           if (more) { params.set("snapshotId", state.snapshot); params.set("cursor", state.cursor); }
           state.busy = true; state.busyEpoch = token;
-          setText(status, "Loading child sessions…");
+          setText(status, t("Loading child sessions…"));
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/children?" + params);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
@@ -3409,9 +3444,9 @@ enum WebUIRoutes {
             renderDetailChildren();
             if (more) state.seen.add(state.cursor);
             state.snapshot = page.snapshotId; state.cursor = page.nextCursor || ""; state.loaded = true;
-            setText(status, rows.children.length ? rows.children.length + " child sessions loaded" : "No child sessions");
+            setText(status, rows.children.length ? t("{0} child sessions loaded", [rows.children.length]) : t("No child sessions"));
           } catch (error) {
-            if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Child sessions unavailable. Refresh to retry.");
+            if (version === detailExtrasVersion && token === requestEpoch) setText(status, t("Child sessions unavailable. Refresh to retry."));
           } finally {
             if (version === detailExtrasVersion && state.busyEpoch === token) {
               state.busy = false;
@@ -3438,13 +3473,13 @@ enum WebUIRoutes {
             const title = document.createElement("strong"); setText(title, sessionTitle(item.session)); button.appendChild(title);
             const meta = document.createElement("p"); meta.className = "meta";
             appendSessionMetadata(meta, item.session);
-            appendMetaPart(meta, textSpan(item.relationship === "confirmed" ? "Confirmed" : "Suggested"));
+            appendMetaPart(meta, textSpan(item.relationship === "confirmed" ? t("Confirmed") : t("Suggested")));
             button.appendChild(meta);
             button.addEventListener("click", function () { openDetail(item.session.sessionId).catch(function () {}); });
             row.appendChild(button);
             if (detailRelationship.canWrite) {
               const actions = document.createElement("div"); actions.className = "agent-filters";
-              const choices = item.relationship === "confirmed" ? [["unlink", "Unlink"]] : [["confirmSuggestion", "Confirm"], ["dismissSuggestion", "Dismiss"]];
+              const choices = item.relationship === "confirmed" ? [["unlink", t("Unlink")]] : [["confirmSuggestion", t("Confirm")], ["dismissSuggestion", t("Dismiss")]];
               choices.forEach(function (choice) {
                 const action = document.createElement("button"); action.type = "button";
                 setText(action, choice[1]);
@@ -3462,24 +3497,24 @@ enum WebUIRoutes {
           const state = detailRelationship, version = detailExtrasVersion, token = requestEpoch;
           state.checking = true; updateRelationshipControls();
           const status = document.getElementById("relationship-access");
-          setText(status, "Checking edit access…");
+          setText(status, t("Checking edit access…"));
           try {
             const access = await api("GET", "/web/api/auth");
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             state.canWrite = access && access.canWrite === true;
-            setText(status, state.canWrite ? "Editor access. Changes apply to this parent session." : "Read only. Sign in with an editor key to make changes.");
+            setText(status, state.canWrite ? t("Editor access. Changes apply to this parent session.") : t("Read only. Sign in with an editor key to make changes."));
             renderDetailChildren();
           } catch (error) {
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             state.canWrite = false;
-            setText(status, "Edit access unavailable. Retry to check access.");
+            setText(status, t("Edit access unavailable. Retry to check access."));
           } finally {
             if (version === detailExtrasVersion && token === requestEpoch) { state.checking = false; updateRelationshipControls(); }
           }
         }
         async function attachDetailChild() {
           const childId = document.getElementById("relationship-child-id").value.trim();
-          if (!childId) { setText(document.getElementById("relationship-status"), "Enter a child session ID."); return; }
+          if (!childId) { setText(document.getElementById("relationship-status"), t("Enter a child session ID.")); return; }
           await mutateRelationship("link", childId, detailContextSession);
         }
         async function mutateRelationship(action, childId, parentId) {
@@ -3490,31 +3525,31 @@ enum WebUIRoutes {
             confirmSuggestion: ["POST", "confirm-suggestion", { suggestedParentId: parentId }],
             dismissSuggestion: ["DELETE", "suggestion", { suggestedParentId: parentId }]
           }[action];
-          if (!operation || !childId || childId === parentId) { setText(document.getElementById("relationship-status"), "Choose a different child session."); return; }
+          if (!operation || !childId || childId === parentId) { setText(document.getElementById("relationship-status"), t("Choose a different child session.")); return; }
           if (action !== "link" && !detailChildren.items.some(function (item) {
             return item.session.sessionId === childId && item.relationship === (action === "unlink" ? "confirmed" : "suggested");
           })) return;
           const version = detailExtrasVersion, token = requestEpoch, status = document.getElementById("relationship-status");
-          relationshipWritePending = true; updateRelationshipControls(); setText(status, "Saving relationship…");
+          relationshipWritePending = true; updateRelationshipControls(); setText(status, t("Saving relationship…"));
           try {
             const result = await api(operation[0], "/web/api/sessions/" + encodeURIComponent(childId) + "/" + operation[1], JSON.stringify(operation[2]));
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             if (!result || result.sessionId !== childId || result.action !== action || result.ok !== true) throw new Error("Invalid relationship response");
             await loadDetailChildren(false);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
-            const labels = { link: "Child session linked.", unlink: "Child session unlinked.", confirmSuggestion: "Suggestion confirmed.", dismissSuggestion: "Suggestion dismissed." };
-            setText(status, labels[action]); setStatus("signed in");
+            const labels = { link: t("Child session linked."), unlink: t("Child session unlinked."), confirmSuggestion: t("Suggestion confirmed."), dismissSuggestion: t("Suggestion dismissed.") };
+            setText(status, labels[action]); setStatus(t("signed in"));
             if (action === "link") document.getElementById("relationship-child-id").value = "";
           } catch (error) {
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
             if (error.status === 401) { expireSession(); return; }
             if (error.status === 403) {
               detailRelationship.canWrite = false; renderDetailChildren();
-              setText(status, "Editor access required. Sign in again to edit.");
+              setText(status, t("Editor access required. Sign in again to edit."));
             } else if (error.status === 409) {
               await loadDetailChildren(false);
-              if (version === detailExtrasVersion && token === requestEpoch) setText(status, "Relationship changed. Review the refreshed child sessions before retrying.");
-            } else setText(status, "Could not confirm the change. Refresh child sessions before retrying.");
+              if (version === detailExtrasVersion && token === requestEpoch) setText(status, t("Relationship changed. Review the refreshed child sessions before retrying."));
+            } else setText(status, t("Could not confirm the change. Refresh child sessions before retrying."));
           } finally {
             relationshipWritePending = false;
             updateRelationshipControls();
@@ -3527,9 +3562,9 @@ enum WebUIRoutes {
           const rows = document.getElementById("timeline-rows"), status = document.getElementById("timeline-status");
           const offset = more ? state.next : 0;
           const params = new URLSearchParams({ generation: generation, offset: String(offset), limit: "500" });
-          state.busy = true; state.busyEpoch = token; setText(status, "Loading timeline…");
+          state.busy = true; state.busyEpoch = token; setText(status, t("Loading timeline…"));
           document.getElementById("transcript-minimap-more").disabled = true;
-          if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), "Loading map timeline… Loaded coverage is unchanged.");
+          if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), t("Loading map timeline… Loaded coverage is unchanged."));
           try {
             const page = await api("GET", "/web/api/sessions/" + encodeURIComponent(sessionId) + "/timeline?" + params);
             if (version !== detailExtrasVersion || token !== requestEpoch) return;
@@ -3553,29 +3588,29 @@ enum WebUIRoutes {
                 setText(time, recordedTime(entry.timestamp) + " · " + healthAgo(Math.floor(Date.parse(entry.timestamp) / 1000))); appendMetaPart(meta, time);
               }
               if (entry.toolName) appendMetaPart(meta, textSpan(entry.toolName));
-              if (entry.tokens) appendMetaPart(meta, textSpan("Tokens: " + entry.tokens.input + " in / " + entry.tokens.output + " out"));
-              if (Number.isFinite(entry.durationToNextMs)) appendMetaPart(meta, textSpan((entry.durationToNextMs / 1000).toLocaleString("en-US") + " s to next"));
+              if (entry.tokens) appendMetaPart(meta, textSpan(t("Tokens: {0} in / {1} out", [entry.tokens.input, entry.tokens.output])));
+              if (Number.isFinite(entry.durationToNextMs)) appendMetaPart(meta, textSpan(t("{0} s to next", [(entry.durationToNextMs / 1000).toLocaleString(uiLocale)])));
               card.appendChild(meta);
               if (Number.isFinite(entry.durationToNextMs) && entry.durationToNextMs >= 0) {
-                const bar = svg("svg", {viewBox:"0 0 300 8", width:300, height:8, role:"img", "aria-label":entry.durationToNextMs / 1000 + " s to next · scaled to longest duration in this page (" + durationMax / 1000 + " s)", class:"timeline-duration"});
+                const bar = svg("svg", {viewBox:"0 0 300 8", width:300, height:8, role:"img", "aria-label":t("{0} s to next · scaled to longest duration in this page ({1} s)", [entry.durationToNextMs / 1000, durationMax / 1000]), class:"timeline-duration"});
                 bar.appendChild(svg("rect", {x:0,y:0,width:300,height:8,fill:"var(--line)"}));
                 bar.appendChild(svg("rect", {x:0,y:0,width:300 * entry.durationToNextMs / durationMax,height:8,fill:"var(--accent)", "data-value":entry.durationToNextMs})); card.appendChild(bar);
               }
               const preview = document.createElement("p"); preview.className = "timeline-preview";
               const plain = entry.preview.replace(/[*_`#]/g, "").trim(); setText(preview, clipPreview(plain) + (plain.length >= 100 ? "…" : "")); card.appendChild(preview);
-              const jump = document.createElement("a"); jump.setAttribute("href", "#/s/" + encodeURIComponent(sessionId) + "/m/" + entry.index); setText(jump, "Jump to message #" + entry.index);
+              const jump = document.createElement("a"); jump.setAttribute("href", "#/s/" + encodeURIComponent(sessionId) + "/m/" + entry.index); setText(jump, t("Jump to message #{0}", [entry.index]));
               jump.addEventListener("click", function (event) { event.preventDefault(); showDetailView("transcript"); jumpToOrdinal(entry.index); }); card.appendChild(jump); rows.appendChild(card);
             });
             state.count += page.entries.length; state.lastIndex = previous; state.total = page.totalEntries;
             state.next = page.nextOffset == null ? null : page.nextOffset; state.loaded = true;
             renderTranscriptOutline(); renderTranscriptMinimap();
-            setText(status, state.count + " / " + state.total + " messages");
+            setText(status, t("{0} / {1} messages", [state.count, state.total]));
             document.getElementById("transcript-outline-more").hidden = state.next == null;
-            setText(document.getElementById("transcript-outline-status"), state.count + " / " + state.total + " timeline entries. Unloaded prompts load at most 5 pages per jump; click again to continue.");
+            setText(document.getElementById("transcript-outline-status"), t("{0} / {1} timeline entries. Unloaded prompts load at most 5 pages per jump; click again to continue.", [state.count, state.total]));
           } catch (error) {
             if (version === detailExtrasVersion && token === requestEpoch) {
-              setText(status, "Timeline unavailable. Refresh the session if its transcript changed.");
-              if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), "Map timeline unavailable. Loaded messages are unchanged. Retry Load map timeline, or refresh the session if its transcript changed.");
+              setText(status, t("Timeline unavailable. Refresh the session if its transcript changed."));
+              if (minimapOpen) setText(document.getElementById("transcript-minimap-status"), t("Map timeline unavailable. Loaded messages are unchanged. Retry Load map timeline, or refresh the session if its transcript changed."));
             }
           } finally {
             if (version === detailExtrasVersion && state.busyEpoch === token) {
@@ -3638,7 +3673,7 @@ enum WebUIRoutes {
             preview.appendChild(textSpan(current.text.slice(current.offset + length,current.offset + length + 100)));
           }
           const hidden = findMatches.filter(findMatchHidden).length;
-          setText(document.getElementById("transcript-find-status"), (findIndex < 0 ? "0" : findIndex + 1) + " of " + findMatches.length + (findMatches.length >= 10000 ? "+ (match cap)" : "") + " matches in " + transcriptMessages.length + " loaded messages" + (hidden ? " · " + hidden + " hidden by type filter" : "") + (messageCursor ? " · more not searched" : " · end of available transcript"));
+          setText(document.getElementById("transcript-find-status"), t("{0} of {1}{2} matches in {3} loaded messages{4}{5}", [findIndex < 0 ? "0" : findIndex + 1, findMatches.length, findMatches.length >= 10000 ? t("+ (match cap)") : "", transcriptMessages.length, hidden ? t(" · {0} hidden by type filter", [hidden]) : "", messageCursor ? t(" · more not searched") : t(" · end of available transcript")]));
           document.getElementById("transcript-find-more").hidden = !messageCursor;
         }
         function moveFind(direction) {
@@ -3672,7 +3707,7 @@ enum WebUIRoutes {
         document.getElementById("transcript-find-query").addEventListener("keydown", function (event) { if (event.key === "Enter" && event.shiftKey && !event.isComposing) { event.preventDefault(); moveFind(-1); } });
         document.getElementById("transcript-find-prev").addEventListener("click", function () { moveFind(-1); });
         document.getElementById("transcript-find-close").addEventListener("click", function () { closeTranscriptFind(true); });
-        document.getElementById("transcript-find-more").addEventListener("click", function () { searchFurther(true).catch(function () { toast("Find could not load more messages.","danger"); }); });
+        document.getElementById("transcript-find-more").addEventListener("click", function () { searchFurther(true).catch(function () { toast(t("Find could not load more messages."),"danger"); }); });
         function clearMessages() {
           closeTranscriptFind();
           clearDetailExtras();
@@ -3709,7 +3744,7 @@ enum WebUIRoutes {
               body: body
             });
           } catch (error) {
-            if (token === requestEpoch) setStatus("Network unavailable");
+            if (token === requestEpoch) setStatus(t("Network unavailable"));
             throw error;
           }
           if (!response.ok) {
@@ -3753,7 +3788,7 @@ enum WebUIRoutes {
           await authWrite("POST", JSON.stringify({ credential: credential }));
           if (token !== requestEpoch) return;
           document.getElementById("credential").value = "";
-          setStatus("signed in");
+          setStatus(t("signed in"));
           setSignedIn(true);
           clearSessionPaging();
           clearMessages();
@@ -3773,9 +3808,9 @@ enum WebUIRoutes {
           clearMessages();
           try {
             await authWrite("DELETE", "{}");
-            if (token === requestEpoch) setStatus("signed out");
+            if (token === requestEpoch) setStatus(t("signed out"));
           } catch (error) {
-            if (token === requestEpoch) setStatus("Sign-out failed; local view cleared. Retry to revoke the server session.");
+            if (token === requestEpoch) setStatus(t("Sign-out failed; local view cleared. Retry to revoke the server session."));
             throw error;
           }
         }
@@ -3817,7 +3852,7 @@ enum WebUIRoutes {
         }
         function updateFacetSummary(kind) {
           const selected = facets[kind].selected;
-          const label = !selected.size ? "All " + kind + "s" : selected.size === 1 ? Array.from(selected.values())[0] : selected.size + " " + kind + "s";
+          const label = !selected.size ? (kind === "source" ? t("All sources") : t("All projects")) : selected.size === 1 ? Array.from(selected.values())[0] : plural(selected.size, kind);
           setText(document.getElementById(kind + "-summary"), label);
           document.getElementById(kind + "-summary").title = label;
         }
@@ -3855,7 +3890,7 @@ enum WebUIRoutes {
             input.addEventListener("change", function () {
               if (input.checked && state.selected.size >= 32) {
                 input.checked = false;
-                setText(document.getElementById(kind + "-status"), "Select up to 32 " + kind + "s.");
+                setText(document.getElementById(kind + "-status"), t(kind === "source" ? "Select up to 32 sources." : "Select up to 32 projects."));
                 return;
               }
               if (input.checked) state.selected.set(item.key, itemLabel);
@@ -3876,7 +3911,7 @@ enum WebUIRoutes {
             label.appendChild(name);
             const count = document.createElement("span");
             count.className = "facet-count";
-            setText(count, item.sessionCount.toLocaleString("en-US"));
+            setText(count, item.sessionCount.toLocaleString(uiLocale));
             label.appendChild(count);
             options.appendChild(label);
           });
@@ -3903,7 +3938,7 @@ enum WebUIRoutes {
             state.seenCursors = new Set();
             renderFacets(kind);
           }
-          setText(status, "Loading…");
+          setText(status, t("Loading…"));
           document.getElementById(kind + "-more").disabled = true;
           try {
             const response = await fetch("/web/api/facets?" + params.toString().replaceAll("+", "%20"), { credentials: "same-origin", headers: headers() });
@@ -3920,11 +3955,11 @@ enum WebUIRoutes {
             page.items.forEach(function (item) { state.items.set(item.key, item); });
             state.loaded = true;
             renderFacets(kind);
-            setText(status, state.items.size ? "" : "No matching " + kind + "s.");
+            setText(status, state.items.size ? "" : t(kind === "source" ? "No matching sources." : "No matching projects."));
           } catch (error) {
             if (epoch === facetEpoch && version === state.version) {
               state.loaded = false;
-              setText(status, "Options unavailable. Reopen to retry.");
+              setText(status, t("Options unavailable. Reopen to retry."));
             }
           } finally {
             if (epoch === facetEpoch && version === state.version) document.getElementById(kind + "-more").disabled = false;
@@ -3934,7 +3969,7 @@ enum WebUIRoutes {
           event.preventDefault();
           const id = document.getElementById("session-id").value.trim();
           if (!id) {
-            setStatus("Enter a session ID.");
+            setStatus(t("Enter a session ID."));
             return;
           }
           const token = bumpEpoch();
@@ -3943,7 +3978,7 @@ enum WebUIRoutes {
           clearMessages();
           clearSessionPaging();
           setText(sessionsNode, "");
-          setStatus("Finding session…");
+          setStatus(t("Finding session…"));
           sessionFilters = new URLSearchParams({ sessionId: id }).toString().replaceAll("+", "%20");
           const page = await api("GET", "/web/api/sessions?" + sessionFilters);
           if (token !== requestEpoch) return;
@@ -3953,7 +3988,7 @@ enum WebUIRoutes {
             setStatus("");
             await openDetail(items[0].sessionId);
           } else {
-            setStatus(items.length ? "Several sessions share this ID. Select the matching session." : "Session not found.");
+            setStatus(items.length ? t("Several sessions share this ID. Select the matching session.") : t("Session not found."));
           }
         }
         function clearFleet() {
@@ -3964,9 +3999,9 @@ enum WebUIRoutes {
           ["fleet-content", "fleet-summary", "fleet-status"].forEach(function (id) { setText(document.getElementById(id), ""); });
           document.getElementById("fleet-content").setAttribute("aria-busy", "false");
         }
-        function fleetCount(value) { return Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported"; }
+        function fleetCount(value) { return Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString(uiLocale) : t("Not reported"); }
         function fleetBytes(value) {
-          if (!Number.isSafeInteger(value) || value < 0) return "Not reported";
+          if (!Number.isSafeInteger(value) || value < 0) return t("Not reported");
           if (value < 1024) return value + " B";
           const units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
           let n = value / 1024, i = 0;
@@ -3982,7 +4017,7 @@ enum WebUIRoutes {
           fleetTimer = null;
           const token = requestEpoch, version = ++fleetRequest;
           const status = document.getElementById("fleet-status"), content = document.getElementById("fleet-content");
-          content.setAttribute("aria-busy", "true"); setText(status, "Loading machine observations…");
+          content.setAttribute("aria-busy", "true"); setText(status, t("Loading machine observations…"));
           function current() { return token === requestEpoch && version === fleetRequest && activePage === "fleet"; }
           try {
             const response = await fetch("/web/api/fleet", {method:"GET", credentials:"same-origin", headers:headers()});
@@ -3996,7 +4031,7 @@ enum WebUIRoutes {
           } catch (error) {
             if (!current()) return;
             setText(content, ""); setText(document.getElementById("fleet-summary"), ""); fleetExpanded.clear();
-            setText(status, error && error.denied ? "Editor access is required to view fleet-wide host metrics." : "Machine observations unavailable. Configure the fleet exporter on the Web host; missing telemetry is not a healthy empty fleet.");
+            setText(status, error && error.denied ? t("Editor access is required to view fleet-wide host metrics.") : t("Machine observations unavailable. Configure the fleet exporter on the Web host; missing telemetry is not a healthy empty fleet."));
           } finally {
             if (current()) {
               content.setAttribute("aria-busy", "false");
@@ -4013,18 +4048,17 @@ enum WebUIRoutes {
           fleetExpanded.forEach(function (id) { if (!data.machines.some(function (m) { return m.id === id; })) fleetExpanded.delete(id); });
           const central = data.central;
           const centralFresh = central && fleetFresh(central.observedAt) && fleetFresh(data.generatedAt);
-          const centralPrefix = central && !centralFresh ? "Stale · " : "";
+          const centralPrefix = central && !centralFresh ? t("Stale · ") : "";
           const fresh = data.machines.filter(function (m) { return m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt); }).length;
           const sessions = central && Array.isArray(central.machines) ? central.machines.reduce(function (n,m) { return n + m.sessions; }, 0) : null;
-          [["Machines", data.machines.length], ["Fresh samples", fresh], ["Central sessions", sessions], ["FTS pending", central && central.ftsPending], ["FTS permanent failures", central && central.ftsFailed]].forEach(function (entry, index) {
+          [[t("Machines"), data.machines.length], [t("Fresh samples"), fresh], [t("Central sessions"), sessions], [t("FTS pending"), central && central.ftsPending], [t("FTS permanent failures"), central && central.ftsFailed]].forEach(function (entry, index) {
             const stat = document.createElement("div"), title = document.createElement("dt"), value = document.createElement("dd");
             setText(title,entry[0]); setText(value,(index >= 2 ? centralPrefix : "") + fleetCount(entry[1]));
             stat.appendChild(title); stat.appendChild(value); summary.appendChild(stat);
           });
-          const note = "Snapshot: " + healthTime(data.generatedAt) + (fleetFresh(data.generatedAt) ? "" : " · Stale or clock ahead")
-            + " · Central index: " + (central ? healthTime(central.observedAt) + (centralFresh ? "" : " (stale or clock ahead)") : "Not reported");
+          const note = t("Snapshot: {0}{1} · Central index: {2}", [healthTime(data.generatedAt), fleetFresh(data.generatedAt) ? "" : t(" · Stale or clock ahead"), central ? healthTime(central.observedAt) + (centralFresh ? "" : t(" (stale or clock ahead)")) : t("Not reported")]);
           setText(document.getElementById("fleet-status"), note);
-          if (!data.machines.length) { setText(content,"No machines configured in the fleet exporter."); return; }
+          if (!data.machines.length) { setText(content,t("No machines configured in the fleet exporter.")); return; }
           function makeTable(title, columns, rows) {
             const wrap = document.createElement("div"), table = document.createElement("table"), caption = document.createElement("caption");
             wrap.className = "fleet-table-wrap"; wrap.tabIndex = 0; wrap.setAttribute("role","region"); wrap.setAttribute("aria-label",title);
@@ -4040,10 +4074,10 @@ enum WebUIRoutes {
             return {wrap:wrap,table:table,body:body,headings:headings};
           }
           function line(cell, text) { const span = document.createElement("span"); span.className = "fleet-subline"; setText(span,text); cell.appendChild(span); }
-          const overview = makeTable("Machines · select a name for details", ["Machine", "Services / attention", "Sessions", "Capture (files)", "Upload tasks", "Index tasks", "Free disk", "Observation"], []);
+          const overview = makeTable(t("Machines · select a name for details"), [t("Machine"), t("Services / attention"), t("Sessions"), t("Capture (files)"), t("Upload tasks"), t("Index tasks"), t("Free disk"), t("Observation")], []);
           overview.table.classList.add("fleet-overview"); rememberFocus(overview.wrap,"overview");
           const secondary = [2,3,4,5,7]; secondary.forEach(function (i) { overview.headings.children[i].className = "fleet-secondary"; });
-          overview.headings.children[4].title = "Sum of per-replica states, not distinct capture generations";
+          overview.headings.children[4].title = t("Sum of per-replica states, not distinct capture generations");
           data.machines.forEach(function (m, index) {
             const observed = m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt);
             const processes = m.processes || [], replicas = m.replicas || [], roots = m.roots || [];
@@ -4058,72 +4092,72 @@ enum WebUIRoutes {
             toggle.type = "button"; toggle.className = "fleet-toggle"; toggle.setAttribute("aria-controls","fleet-detail-" + index); rememberFocus(toggle,"toggle:" + m.id);
             function disclosure() { const open = fleetExpanded.has(m.id); detailRow.hidden = !open; toggle.setAttribute("aria-expanded",String(open)); setText(toggle,(open ? "▾ " : "▸ ") + m.label); }
             toggle.addEventListener("click",function () { if (fleetExpanded.has(m.id)) fleetExpanded.delete(m.id); else fleetExpanded.add(m.id); disclosure(); });
-            disclosure(); name.appendChild(toggle); line(name,m.role); row.appendChild(name);
+            disclosure(); name.appendChild(toggle); line(name,t(m.role)); row.appendChild(name);
             const cells = [];
             for (let i = 1; i < 8; i += 1) { const cell = document.createElement("td"); if (secondary.includes(i)) cell.className = "fleet-secondary"; row.appendChild(cell); cells[i] = cell; }
             const state = cells[1]; state.className = "fleet-state";
-            if (m.status === "unreachable") state.appendChild(pill("danger","Unreachable"));
-            else if (!observed) state.appendChild(pill("warn","Stale or clock ahead"));
-            else if (stopped) state.appendChild(pill("danger","Stopped process"));
-            else if (!processes.length) state.appendChild(pill("neutral","Not reported"));
-            else if (processes.some(function (p) { return p.state !== "running"; })) state.appendChild(pill("neutral","Process unknown"));
-            else state.appendChild(pill("ok","Running"));
-            if (roots.some(function (r) { return r.captured < r.locators || r.unavailable > 0; })) state.appendChild(pill("warn","Capture gaps"));
-            if (badRoots) state.appendChild(pill("warn","Scan / epoch issue"));
-            if (retrying) state.appendChild(pill("warn","Upload retry errors"));
-            if (c && c.retryable > 0) state.appendChild(pill("warn","Index retries"));
-            if (lowDisk) state.appendChild(pill("warn","Low disk"));
-            if ((m.errors || []).length) state.appendChild(pill("warn","Missing observations"));
-            setText(cells[2], c ? centralPrefix + fleetCount(c.sessions) : "Not reported");
-            if (capture) { setText(cells[3],"Captured " + fleetCount(capture.capturedLocators)); line(cells[3],"Dirty " + fleetCount(capture.dirtyLocators) + " · Unavailable " + fleetCount(capture.unavailableLocators)); }
-            else setText(cells[3],"Not reported");
+            if (m.status === "unreachable") state.appendChild(pill("danger",t("Unreachable")));
+            else if (!observed) state.appendChild(pill("warn",t("Stale or clock ahead")));
+            else if (stopped) state.appendChild(pill("danger",t("Stopped process")));
+            else if (!processes.length) state.appendChild(pill("neutral",t("Not reported")));
+            else if (processes.some(function (p) { return p.state !== "running"; })) state.appendChild(pill("neutral",t("Process unknown")));
+            else state.appendChild(pill("ok",t("Running")));
+            if (roots.some(function (r) { return r.captured < r.locators || r.unavailable > 0; })) state.appendChild(pill("warn",t("Capture gaps")));
+            if (badRoots) state.appendChild(pill("warn",t("Scan / epoch issue")));
+            if (retrying) state.appendChild(pill("warn",t("Upload retry errors")));
+            if (c && c.retryable > 0) state.appendChild(pill("warn",t("Index retries")));
+            if (lowDisk) state.appendChild(pill("warn",t("Low disk")));
+            if ((m.errors || []).length) state.appendChild(pill("warn",t("Missing observations")));
+            setText(cells[2], c ? centralPrefix + fleetCount(c.sessions) : t("Not reported"));
+            if (capture) { setText(cells[3],t("Captured {0}", [fleetCount(capture.capturedLocators)])); line(cells[3],t("Dirty {0} · Unavailable {1}", [fleetCount(capture.dirtyLocators), fleetCount(capture.unavailableLocators)])); }
+            else setText(cells[3],t("Not reported"));
             if (replicas.length) {
               const pending = replicas.reduce(function (n,r) { return n + r.pending; },0), inflight = replicas.reduce(function (n,r) { return n + r.inflight; },0);
-              setText(cells[4],"Pending " + fleetCount(pending)); line(cells[4],"In flight " + fleetCount(inflight));
-              if (pending || inflight) state.appendChild(pill("info","Active uploads"));
-            } else setText(cells[4],"Not reported");
-            if (c) { setText(cells[5],centralPrefix + "Pending " + fleetCount(c.pending)); line(cells[5],"Processing " + fleetCount(c.processing)); } else setText(cells[5],"Not reported");
+              setText(cells[4],t("Pending {0}", [fleetCount(pending)])); line(cells[4],t("In flight {0}", [fleetCount(inflight)]));
+              if (pending || inflight) state.appendChild(pill("info",t("Active uploads")));
+            } else setText(cells[4],t("Not reported"));
+            if (c) { setText(cells[5],t("{0}Pending {1}", [centralPrefix, fleetCount(c.pending)])); line(cells[5],t("Processing {0}", [fleetCount(c.processing)])); } else setText(cells[5],t("Not reported"));
             setText(cells[6],fleetBytes(m.disk && m.disk.freeBytes));
-            cells[7].appendChild(pill(observed ? "info" : "warn", observed ? "Sampled" : m.status === "unreachable" ? "Unreachable" : "Stale or clock ahead"));
+            cells[7].appendChild(pill(observed ? "info" : "warn", observed ? t("Sampled") : m.status === "unreachable" ? t("Unreachable") : t("Stale or clock ahead")));
             line(cells[7],healthAgo(m.observedAt)); cells[7].title = healthTime(m.observedAt);
             overview.body.appendChild(row);
             const detailCell = document.createElement("td"), details = document.createElement("div"); detailCell.colSpan = 8; details.className = "fleet-details";
             const identity = document.createElement("p"); identity.className = "meta";
-            setText(identity,m.label + " · sampled " + healthTime(m.observedAt) + " · attempted " + healthTime(m.lastAttemptAt)); details.appendChild(identity);
+            setText(identity,t("{0} · sampled {1} · attempted {2}", [m.label, healthTime(m.observedAt), healthTime(m.lastAttemptAt)])); details.appendChild(identity);
             const metrics = document.createElement("div"); metrics.className = "fleet-metrics";
-            function block(key, title, rows) { const t = makeTable(title,["Metric","Value"],rows); rememberFocus(t.wrap,key + ":" + m.id); metrics.appendChild(t.wrap); }
-            block("central", "Central sessions" + (c && !centralFresh ? " (stale or clock ahead)" : ""), [["Stored sessions",fleetCount(c && c.sessions)], ["Non-hidden, non-skip",fleetCount(c && c.visibleSessions)],
-              ["Pending / processing", c ? fleetCount(c.pending) + " / " + fleetCount(c.processing) : "Not reported"],
-              ["Parsed / index-ready tasks",c ? fleetCount(c.parsed) + " / " + fleetCount(c.indexReady) : "Not reported"],
-              ["Received generations",fleetCount(c && c.publications)],
-              ["Retryable / quarantined", c ? fleetCount(c.retryable) + " / " + fleetCount(c.quarantined) : "Not reported"]]);
-            block("collector", "Collector", [["Capture generations",fleetCount(capture && capture.publications)], ["Captured files",fleetCount(capture && capture.capturedLocators)],
-              ["Dirty / cooling files",capture ? fleetCount(capture.dirtyLocators) + " / " + fleetCount(capture.coolingLocators) : "Not reported"],
-              ["Unavailable files",fleetCount(capture && capture.unavailableLocators)], ["Last capture",healthTime(capture && capture.lastCaptureAt)]]);
-            block("storage", "Storage", [["Volume used",m.disk ? fleetBytes(m.disk.totalBytes-m.disk.freeBytes) : "Not reported"],
-              ["Volume free",fleetBytes(m.disk && m.disk.freeBytes)], ["Volume capacity",fleetBytes(m.disk && m.disk.totalBytes)]]
+            function block(key, title, rows) { const table = makeTable(title,[t("Metric"),t("Value")],rows); rememberFocus(table.wrap,key + ":" + m.id); metrics.appendChild(table.wrap); }
+            block("central", t("Central sessions{0}", [c && !centralFresh ? t(" (stale or clock ahead)") : ""]), [[t("Stored sessions"),fleetCount(c && c.sessions)], [t("Non-hidden, non-skip"),fleetCount(c && c.visibleSessions)],
+              [t("Pending / processing"), c ? fleetCount(c.pending) + " / " + fleetCount(c.processing) : t("Not reported")],
+              [t("Parsed / index-ready tasks"),c ? fleetCount(c.parsed) + " / " + fleetCount(c.indexReady) : t("Not reported")],
+              [t("Received generations"),fleetCount(c && c.publications)],
+              [t("Retryable / quarantined"), c ? fleetCount(c.retryable) + " / " + fleetCount(c.quarantined) : t("Not reported")]]);
+            block("collector", t("Collector"), [[t("Capture generations"),fleetCount(capture && capture.publications)], [t("Captured files"),fleetCount(capture && capture.capturedLocators)],
+              [t("Dirty / cooling files"),capture ? fleetCount(capture.dirtyLocators) + " / " + fleetCount(capture.coolingLocators) : t("Not reported")],
+              [t("Unavailable files"),fleetCount(capture && capture.unavailableLocators)], [t("Last capture"),healthTime(capture && capture.lastCaptureAt)]]);
+            block("storage", t("Storage"), [[t("Volume used"),m.disk ? fleetBytes(m.disk.totalBytes-m.disk.freeBytes) : t("Not reported")],
+              [t("Volume free"),fleetBytes(m.disk && m.disk.freeBytes)], [t("Volume capacity"),fleetBytes(m.disk && m.disk.totalBytes)]]
               .concat((m.storage || []).map(function (d) { return [d.name,fleetBytes(d.usedBytes) + " · " + healthAgo(d.observedAt)]; })));
             details.appendChild(metrics);
             if (m.disk && m.disk.totalBytes > 0) {
               const progress = document.createElement("progress"); progress.max = m.disk.totalBytes; progress.value = m.disk.totalBytes-m.disk.freeBytes;
-              progress.setAttribute("aria-label", "Volume used on " + m.label); details.appendChild(progress);
-              if (lowDisk) { const warning = document.createElement("p"); warning.className = "attention"; setText(warning,"Low free disk: below 20 GiB or 10% of capacity."); details.appendChild(warning); }
+              progress.setAttribute("aria-label", t("Volume used on {0}", [m.label])); details.appendChild(progress);
+              if (lowDisk) { const warning = document.createElement("p"); warning.className = "attention"; setText(warning,t("Low free disk: below 20 GiB or 10% of capacity.")); details.appendChild(warning); }
             }
-            const processTable = makeTable("Sampled processes", ["Service","State","PID","Revision"], processes.length ? processes.map(function (p) { return [p.name,p.state,Number.isSafeInteger(p.pid) && p.pid > 0 ? String(p.pid) : "Not reported",p.revision ? p.revision.slice(0,8) : "Not reported"]; }) : [["Not reported","Not reported","Not reported","Not reported"]]);
+            const processTable = makeTable(t("Sampled processes"), [t("Service"),t("State"),t("PID"),t("Revision")], processes.length ? processes.map(function (p) { return [p.name,t(p.state),Number.isSafeInteger(p.pid) && p.pid > 0 ? String(p.pid) : t("Not reported"),p.revision ? p.revision.slice(0,8) : t("Not reported")]; }) : [[t("Not reported"),t("Not reported"),t("Not reported"),t("Not reported")]]);
             processTable.table.classList.add("fleet-process-table"); rememberFocus(processTable.wrap,"processes:" + m.id); details.appendChild(processTable.wrap);
-            const replicaTable = makeTable("Replica publication states", ["Replica","Pending","In flight","ACK","Privacy withheld","Retry errors"], replicas.length ? replicas.map(function (r) { return [r.id,fleetCount(r.pending),fleetCount(r.inflight),fleetCount(r.acknowledged),fleetCount(r.withheld),fleetCount(r.failed)]; }) : [["Not reported","Not reported","Not reported","Not reported","Not reported","Not reported"]]);
+            const replicaTable = makeTable(t("Replica publication states"), [t("Replica"),t("Pending"),t("In flight"),t("ACK"),t("Privacy withheld"),t("Retry errors")], replicas.length ? replicas.map(function (r) { return [r.id,fleetCount(r.pending),fleetCount(r.inflight),fleetCount(r.acknowledged),fleetCount(r.withheld),fleetCount(r.failed)]; }) : [[t("Not reported"),t("Not reported"),t("Not reported"),t("Not reported"),t("Not reported"),t("Not reported")]]);
             replicaTable.table.classList.add("fleet-replica-table"); rememberFocus(replicaTable.wrap,"replicas:" + m.id); details.appendChild(replicaTable.wrap);
-            if ((m.errors || []).length) { const error = document.createElement("p"); error.className = "attention"; setText(error,"Missing observations: " + m.errors.join(", ")); details.appendChild(error); }
+            if ((m.errors || []).length) { const error = document.createElement("p"); error.className = "attention"; setText(error,t("Missing observations: {0}", [m.errors.join(", ")])); details.appendChild(error); }
             if (roots.length) {
-              const sourceTable = makeTable("Sources & inventory coverage", ["Source / root", "Tracked files", "Captured", "Dirty", "Cooling", "Unavailable", "Scan", "Epoch"], roots.map(function (r) {
+              const sourceTable = makeTable(t("Sources & inventory coverage"), [t("Source / root"), t("Tracked files"), t("Captured"), t("Dirty files"), t("Cooling"), t("Unavailable"), t("Scan"), t("Epoch")], roots.map(function (r) {
                 return [sourceLabel(r.source) + " · " + r.id, fleetCount(r.locators),fleetCount(r.captured),fleetCount(r.dirty),fleetCount(r.cooling),fleetCount(r.unavailable),
-                  r.scanFailed ? "Failed" : r.scanning ? "Scanning · lag " + fleetCount(r.scanLag) : r.scanLag ? "Pending · lag " + fleetCount(r.scanLag) : "Complete", r.epochStatus];
+                  r.scanFailed ? t("Failed") : r.scanning ? t("Scanning · lag {0}", [fleetCount(r.scanLag)]) : r.scanLag ? t("Pending · lag {0}", [fleetCount(r.scanLag)]) : t("Complete"), t(r.epochStatus)];
               }));
               sourceTable.table.classList.add("fleet-source-table"); rememberFocus(sourceTable.wrap,"sources:" + m.id); details.appendChild(sourceTable.wrap);
             }
             if (m.machineId) {
               const link = document.createElement("a"); link.href = routeHref({page:"sessions",filters:{machine:m.machineId}});
-              setText(link,"Browse this machine’s sessions"); rememberFocus(link,"browse:" + m.id); details.appendChild(link);
+              setText(link,t("Browse this machine’s sessions")); rememberFocus(link,"browse:" + m.id); details.appendChild(link);
             }
             detailCell.appendChild(details); detailRow.appendChild(detailCell); overview.body.appendChild(detailRow);
           });
@@ -4138,12 +4172,12 @@ enum WebUIRoutes {
           overviewStreams = null; overviewObservedAt = null;
           setText(healthContent, "");
           setText(document.getElementById("health-summary"), "");
-          setText(healthStatus, "Health is temporarily unavailable.");
+          setText(healthStatus, t("Health is temporarily unavailable."));
           healthContent.setAttribute("aria-busy", "false");
           setText(overviewNode, "");
           const note = document.createElement("p");
           note.className = "empty";
-          setText(note, "Overview is temporarily unavailable.");
+          setText(note, t("Overview is temporarily unavailable."));
           overviewNode.appendChild(note);
         }
         async function loadOverview() {
@@ -4210,16 +4244,16 @@ enum WebUIRoutes {
           const names = Object.keys(sources).map(sourceLabel);
           const summary = document.createElement("p");
           summary.className = "overview-summary";
-          const sourceText = names.length ? plural(names.length, "source") : "No sources yet";
-          setText(summary, "Session library · " + sourceText + " · " + plural(ready, "ready session"));
+          const sourceText = names.length ? plural(names.length, "source") : t("No sources yet");
+          setText(summary, t("Session library · {0} · {1}", [sourceText, plural(ready, t("ready session"))]));
           overviewNode.appendChild(summary);
           if (streams.length) {
             const identities = document.createElement("details");
             const caption = document.createElement("summary");
-            setText(caption, "Technical details");
+            setText(caption, t("Technical details"));
             identities.appendChild(caption);
             const counts = document.createElement("p");
-            setText(counts, plural(publications, "captured file"));
+            setText(counts, plural(publications, t("captured file")));
             identities.appendChild(counts);
             streams.forEach(function (stream) {
               const line = document.createElement("p");
@@ -4233,27 +4267,27 @@ enum WebUIRoutes {
         }
         // Relative age for Health rows; exact times remain visible and machine-readable.
         function healthAgo(value) {
-          if (!(Number.isSafeInteger(value) && value >= 0 && value <= 253402300799)) return "Not reported";
+          if (!(Number.isSafeInteger(value) && value >= 0 && value <= 253402300799)) return t("Not reported");
           const seconds = Math.floor(Date.now() / 1000 - value);
           if (seconds < 0) return healthTime(value);
-          if (seconds < 60) return seconds + "s ago";
-          if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
-          if (seconds < 86400) return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m ago";
-          return Math.floor(seconds / 86400) + "d ago";
+          if (seconds < 60) return t("{0}s ago", [seconds]);
+          if (seconds < 3600) return t("{0}m ago", [Math.floor(seconds / 60)]);
+          if (seconds < 86400) return t("{0}h {1}m ago", [Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60)]);
+          return t("{0}d ago", [Math.floor(seconds / 86400)]);
         }
         function healthTime(value) {
           return Number.isSafeInteger(value) && value >= 0 && value <= 253402300799
-            ? new Date(value * 1000).toLocaleString() : "Not reported";
+            ? new Date(value * 1000).toLocaleString(uiLocale) : t("Not reported");
         }
         // Liveness comes from the collector heartbeat only; capture activity and
         // task attention are reported separately.
         function healthLiveness(heartbeatAt) {
-          if (!Number.isSafeInteger(heartbeatAt) || heartbeatAt < 0 || heartbeatAt > 253402300799) return ["neutral", "No heartbeat"];
+          if (!Number.isSafeInteger(heartbeatAt) || heartbeatAt < 0 || heartbeatAt > 253402300799) return ["neutral", t("No heartbeat")];
           const age = Date.now() / 1000 - heartbeatAt;
-          if (age < 0) return ["neutral", "Clock ahead"];
-          if (age < 15 * 60) return ["ok", "Live"];
-          if (age < 24 * 3600) return ["warn", "Quiet"];
-          return ["danger", "Offline"];
+          if (age < 0) return ["neutral", t("Clock ahead")];
+          if (age < 15 * 60) return ["ok", t("Live")];
+          if (age < 24 * 3600) return ["warn", t("Quiet")];
+          return ["danger", t("Offline")];
         }
         function pill(tone, text) {
           const node = document.createElement("span");
@@ -4265,7 +4299,7 @@ enum WebUIRoutes {
         function renderHealth(streams, observedAt) {
           setText(healthContent, "");
           healthContent.setAttribute("aria-busy", "false");
-          setText(healthStatus, streams.length ? "Observed: " + healthTime(observedAt) : "No registered sources reported.");
+          setText(healthStatus, streams.length ? t("Observed: {0}", [healthTime(observedAt)]) : t("No registered sources reported."));
           const fleet = { ok: 0, warn: 0, danger: 0, neutral: 0, attention: 0 };
           streams.forEach(function (stream) {
             const card = document.createElement("section");
@@ -4291,10 +4325,10 @@ enum WebUIRoutes {
             const tasks = stream.ingest && stream.ingest.taskCounts;
             if (tasks && (tasks.retryableFailure > 0 || tasks.quarantined > 0)) {
               fleet.attention += 1;
-              pills.appendChild(pill("warn", "Needs attention"));
+              pills.appendChild(pill("warn", t("Needs attention")));
               const note = document.createElement("p");
               note.className = "attention";
-              setText(note, "Some captures need attention.");
+              setText(note, t("Some captures need attention."));
               card.appendChild(note);
             }
             const metrics = document.createElement("dl");
@@ -4311,53 +4345,53 @@ enum WebUIRoutes {
               row(label, "", healthTime(value));
               const cell = metrics.lastChild;
               const valid = Number.isSafeInteger(value) && value >= 0 && value <= 253402300799;
-              if (!valid) { setText(cell, "Not reported"); return; }
+              if (!valid) { setText(cell, t("Not reported")); return; }
               const time = document.createElement("time"); time.dateTime = new Date(value * 1000).toISOString(); setText(time, healthAgo(value)); cell.appendChild(time);
               const exact = textSpan(healthTime(value)); exact.className = "health-timestamp"; cell.appendChild(exact);
             }
             function count(label, value) {
-              row(label, Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported");
+              row(label, Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString(uiLocale) : t("Not reported"));
             }
             const capture = document.createElement("p"); capture.className = "meta";
-            setText(capture, "Capture activity · latest observations, not history"); card.appendChild(capture);
-            count("Captured files", stream.ingest && stream.ingest.publicationCount);
-            [["Pending", "pending"], ["Processing", "processing"],
-              ["Parsed (includes skip)", "parsed"], ["Indexed for search", "indexReady"],
-              ["Retryable failures", "retryableFailure"], ["Quarantined", "quarantined"]].forEach(function (metric) {
+            setText(capture, t("Capture activity · latest observations, not history")); card.appendChild(capture);
+            count(t("Captured files"), stream.ingest && stream.ingest.publicationCount);
+            [[t("Pending"), "pending"], [t("Processing"), "processing"],
+              [t("Parsed (includes skip)"), "parsed"], [t("Indexed for search"), "indexReady"],
+              [t("Retryable failures"), "retryableFailure"], [t("Quarantined"), "quarantined"]].forEach(function (metric) {
               count(metric[0], tasks && tasks[metric[1]]);
             });
-            count("Parse failures", stream.ingest && stream.ingest.parseFailureTasks);
-            count("Search-ready sessions", stream.fts && stream.fts.readyLogicalSessions);
-            timeRow("Heartbeat", stream.heartbeatAt);
-            timeRow("Last capture", stream.lastCapture && stream.lastCapture.observedAt);
-            timeRow("Oldest pending", stream.ingest && stream.ingest.oldestPendingAt);
-            row("AI state", stream.ai ? stream.ai.state : "Not reported");
-            row("Replica acknowledgements", Array.isArray(stream.replicaACKs)
-              ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthAgo(ack.observedAt); }).join("; ") || "None reported"
-              : "Not reported", Array.isArray(stream.replicaACKs)
+            count(t("Parse failures"), stream.ingest && stream.ingest.parseFailureTasks);
+            count(t("Search-ready sessions"), stream.fts && stream.fts.readyLogicalSessions);
+            timeRow(t("Heartbeat"), stream.heartbeatAt);
+            timeRow(t("Last capture"), stream.lastCapture && stream.lastCapture.observedAt);
+            timeRow(t("Oldest pending"), stream.ingest && stream.ingest.oldestPendingAt);
+            row(t("AI state"), stream.ai ? t(stream.ai.state) : t("Not reported"));
+            row(t("Replica acknowledgements"), Array.isArray(stream.replicaACKs)
+              ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthAgo(ack.observedAt); }).join("; ") || t("None reported")
+              : t("Not reported"), Array.isArray(stream.replicaACKs)
               ? stream.replicaACKs.map(function (ack) { return ack.serverId + ": " + healthTime(ack.observedAt); }).join("; ") : "");
             card.appendChild(metrics);
             const identity = document.createElement("details");
             const caption = document.createElement("summary");
-            setText(caption, "Source identity");
+            setText(caption, t("Source identity"));
             identity.appendChild(caption);
             const value = document.createElement("p");
-            setText(value, "Machine: " + (stream.machineId || "Not reported") + " · Instance: " + (stream.sourceInstanceId || "Not reported"));
+            setText(value, t("Machine: {0} · Instance: {1}", [stream.machineId || t("Not reported"), stream.sourceInstanceId || t("Not reported")]));
             identity.appendChild(value);
             card.appendChild(identity);
             healthContent.appendChild(card);
           });
           const summaryNode = document.getElementById("health-summary");
           setText(summaryNode, "");
-          [["ok", fleet.ok, " live"], ["warn", fleet.warn, " quiet"], ["danger", fleet.danger, " offline"],
-            ["neutral", fleet.neutral, " unknown liveness"]].forEach(function (entry) {
-            if (entry[1]) summaryNode.appendChild(pill(entry[0], entry[1].toLocaleString("en-US") + entry[2]));
+          [["ok", fleet.ok, t(" live")], ["warn", fleet.warn, t(" quiet")], ["danger", fleet.danger, t(" offline")],
+            ["neutral", fleet.neutral, t(" unknown liveness")]].forEach(function (entry) {
+            if (entry[1]) summaryNode.appendChild(pill(entry[0], entry[1].toLocaleString(uiLocale) + entry[2]));
           });
-          if (fleet.attention) summaryNode.appendChild(pill("warn", plural(fleet.attention, "needs attention", "need attention")));
+          if (fleet.attention) summaryNode.appendChild(pill("warn", plural(fleet.attention, t("needs attention"), t("need attention"))));
           if (streams.length) {
             // Shared footnotes, shown once instead of on every card.
-            ["Skip-tier sessions stay Parsed and are not a search backlog.",
-              "Quarantined counts include empty transcripts (parse.noVisibleMessages), not a Cursor-only parser failure."].forEach(function (text) {
+            [t("Skip-tier sessions stay Parsed and are not a search backlog."),
+              t("Quarantined counts include empty transcripts (parse.noVisibleMessages), not a Cursor-only parser failure.")].forEach(function (text) {
               const note = document.createElement("p");
               note.className = "health-note";
               setText(note, text);
@@ -4369,7 +4403,7 @@ enum WebUIRoutes {
           return item.projectLabel || item.projectKey || "";
         }
         function sessionTitle(item) {
-          return item.title && item.title !== item.sessionId ? item.title : "Untitled session";
+          return item.title && item.title !== item.sessionId ? item.title : t("Untitled session");
         }
         function appendMetaPart(meta, node) {
           if (meta.children.length) {
@@ -4404,31 +4438,31 @@ enum WebUIRoutes {
             const date = new Date(item.startedAt * 1000);
             const time = document.createElement("time");
             time.dateTime = date.toISOString();
-            time.title = date.toLocaleString();
+            time.title = date.toLocaleString(uiLocale);
             const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-            const relative = seconds < 0 ? null : seconds < 60 ? "just now"
-              : seconds < 3600 ? Math.floor(seconds / 60) + "m ago"
-              : seconds < 86400 ? Math.floor(seconds / 3600) + "h ago"
-              : seconds < 604800 ? Math.floor(seconds / 86400) + "d ago" : null;
-            setText(time, relative || date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }));
+            const relative = seconds < 0 ? null : seconds < 60 ? t("just now")
+              : seconds < 3600 ? t("{0}m ago", [Math.floor(seconds / 60)])
+              : seconds < 86400 ? t("{0}h ago", [Math.floor(seconds / 3600)])
+              : seconds < 604800 ? t("{0}d ago", [Math.floor(seconds / 86400)]) : null;
+            setText(time, relative || date.toLocaleDateString(uiLocale, { year: "numeric", month: "short", day: "numeric" }));
             appendMetaPart(meta, time);
           }
           if (Number.isSafeInteger(item.lastActivityAt)) {
             const activity = document.createElement("span");
-            setText(activity, "Activity: " + (Number.isSafeInteger(item.lastActivityAt) ? healthTime(item.lastActivityAt) : "Unknown"));
+            setText(activity, t("Activity: {0}", [Number.isSafeInteger(item.lastActivityAt) ? healthTime(item.lastActivityAt) : t("Unknown")]));
             appendMetaPart(meta, activity);
           }
           [["model", item.model], ["cost", item.costUsd], ["tool", item.toolMessageCount]].forEach(function (entry) {
             const value = entry[1];
             if (entry[0] === "model" ? typeof value !== "string" || !value : entry[0] === "tool" ? !Number.isSafeInteger(value) || value < 0 : typeof value !== "number" || !Number.isFinite(value) || value < 0) return;
             const label = document.createElement("span");
-            setText(label, entry[0] === "model" ? value : entry[0] === "cost" ? costValue(value,"costUsd") : value.toLocaleString("en-US") + " tool");
+            setText(label, entry[0] === "model" ? value : entry[0] === "cost" ? costValue(value,"costUsd") : t("{0} tool", [value.toLocaleString(uiLocale)]));
             appendMetaPart(meta,label);
           });
           if (showCounts) {
             const counts = [["user", item.userMessageCount], ["assistant", item.assistantMessageCount], ["system", item.systemMessageCount]]
               .filter(function (entry) { return Number.isSafeInteger(entry[1]) && entry[1] > 0; })
-              .map(function (entry) { return entry[1].toLocaleString("en-US") + " " + entry[0]; });
+              .map(function (entry) { return entry[1].toLocaleString(uiLocale) + " " + t(entry[0]); });
             if (counts.length) {
               const label = document.createElement("span");
               label.className = "message-counts";
@@ -4440,7 +4474,7 @@ enum WebUIRoutes {
         function appendParentLink(host, item) {
           if (typeof item.parentSessionId !== "string" || !item.parentSessionId) return;
           const link = document.createElement("button"); link.type = "button"; link.className = "parent-link";
-          setText(link,"Parent session");
+          setText(link,t("Parent session"));
           link.addEventListener("click",function () { openDetail(item.parentSessionId).catch(function () {}); });
           host.appendChild(link);
         }
@@ -4448,12 +4482,12 @@ enum WebUIRoutes {
           appendParentLink(host,item);
           if (!Number.isSafeInteger(item.childCount) || item.childCount <= 0) return;
           const disclosure = document.createElement("details"); disclosure.className = "session-nesting";
-          const summary = document.createElement("summary"); setText(summary,"(" + item.childCount + ") child sessions");
+          const summary = document.createElement("summary"); setText(summary,t("({0}) child sessions", [item.childCount]));
           disclosure.appendChild(summary);
           const status = document.createElement("p"); status.className = "nesting-status"; status.setAttribute("role","status");
           const rows = document.createElement("div"); rows.className = "nested-rows";
           const more = document.createElement("button"); more.type = "button"; more.className = "nested-more"; more.hidden = true;
-          setText(more,"Load more child sessions");
+          setText(more,t("Load more child sessions"));
           disclosure.appendChild(status); disclosure.appendChild(rows); disclosure.appendChild(more); host.appendChild(disclosure);
           let loaded = false, busy = false, cursor = "", snapshot = "", total = 0;
           const seen = new Set();
@@ -4464,7 +4498,7 @@ enum WebUIRoutes {
             const current = function () { return token === requestEpoch && sessionsNode.contains(host); };
             const params = new URLSearchParams(); params.set("limit","50");
             if (continuation) { params.set("snapshotId",snapshot); params.set("cursor",cursor); }
-            setText(status,"Loading child sessions…");
+            setText(status,t("Loading child sessions…"));
             try {
               const page = await api("GET","/web/api/sessions/" + encodeURIComponent(item.sessionId) + "/children?" + params);
               if (!current()) return;
@@ -4478,36 +4512,36 @@ enum WebUIRoutes {
                 const title = document.createElement("strong"); setText(title,sessionTitle(child.session)); button.appendChild(title);
                 const meta = document.createElement("span"); meta.className = "meta";
                 appendSessionMetadata(meta,child.session,true);
-                const relationship = document.createElement("span"); setText(relationship,child.relationship === "confirmed" ? "Confirmed" : "Suggested"); appendMetaPart(meta,relationship);
+                const relationship = document.createElement("span"); setText(relationship,child.relationship === "confirmed" ? t("Confirmed") : t("Suggested")); appendMetaPart(meta,relationship);
                 button.appendChild(meta); button.addEventListener("click",function () { openDetail(child.session.sessionId).catch(function () {}); });
                 row.appendChild(button); appendParentLink(row,child.session); rows.appendChild(row);
               });
               snapshot = page.snapshotId; cursor = page.nextCursor || ""; loaded = true;
-              more.hidden = !cursor; setText(more,"Load more child sessions");
-              setText(status,total + " child sessions loaded" + (cursor ? " · More available" : "") + " · Current children snapshot; (N) is from the list snapshot.");
+              more.hidden = !cursor; setText(more,t("Load more child sessions"));
+              setText(status,t("{0} child sessions loaded{1} · Current children snapshot; (N) is from the list snapshot.", [total, cursor ? t(" · More available") : ""]));
             } catch (error) {
               if (!current()) return;
               loaded = false; cursor = ""; snapshot = "";
               setText(rows,""); seen.clear(); total = 0;
-              setText(status,"Child sessions unavailable or unsupported by this older server. Retry or refresh the list; no relationships were inferred.");
-              more.hidden = false; setText(more,"Retry child sessions");
+              setText(status,t("Child sessions unavailable or unsupported by this older server. Retry or refresh the list; no relationships were inferred."));
+              more.hidden = false; setText(more,t("Retry child sessions"));
             } finally { busy = false; if (current()) more.disabled = false; }
           }
           disclosure.addEventListener("toggle",function () { if (disclosure.open && !loaded) load(false); });
           more.addEventListener("click",function () { load(loaded); });
         }
         function sessionDateGroup(startedAt) {
-          if (!Number.isSafeInteger(startedAt) || startedAt < 0 || startedAt > 253402300799) return "Undated";
+          if (!Number.isSafeInteger(startedAt) || startedAt < 0 || startedAt > 253402300799) return t("Undated");
           const date = new Date(startedAt * 1000);
           const now = new Date(Date.now());
           const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
           const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
           const days = Math.round((today - day) / 86400000);
-          if (days <= 0) return "Today";
-          if (days === 1) return "Yesterday";
-          if (days < 7) return "Previous 7 days";
-          if (days < 30) return "Previous 30 days";
-          return date.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+          if (days <= 0) return t("Today");
+          if (days === 1) return t("Yesterday");
+          if (days < 7) return t("Previous 7 days");
+          if (days < 30) return t("Previous 30 days");
+          return date.toLocaleDateString(uiLocale, { year: "numeric", month: "long" });
         }
         function acceptSessionsPage(more, page) {
           closeCommandPalette();
@@ -4531,7 +4565,7 @@ enum WebUIRoutes {
           }
           if (!more) setText(sessionsNode, "");
           if (!more && !(page.items || []).length) {
-            sessionsNode.appendChild(emptyState("inbox", page.warning || "No sessions found", "", hasActiveFilters() ? [["Clear filters", clearAllFilters]] : []));
+            sessionsNode.appendChild(emptyState("inbox", page.warning || t("No sessions found"), "", hasActiveFilters() ? [[t("Clear filters"), clearAllFilters]] : []));
           }
           // Date groups restart on every page; ranked search results stay ungrouped.
           const grouped = !(page.items || []).some(function (item) { return item.matchType || item.snippet; });
@@ -4553,7 +4587,7 @@ enum WebUIRoutes {
               const match = document.createElement("span");
               match.className = "match-badge";
               match.dataset.match = item.matchType === "semantic" ? "semantic" : "keyword";
-              setText(match, item.matchType === "both" ? "Keyword + semantic" : item.matchType === "semantic" ? "Semantic match" : "Keyword match");
+              setText(match, item.matchType === "both" ? t("Keyword + semantic") : item.matchType === "semantic" ? t("Semantic match") : t("Keyword match"));
               appendMetaPart(meta, match);
             }
             button.appendChild(meta);
@@ -4585,7 +4619,7 @@ enum WebUIRoutes {
               row.appendChild(button); appendSessionNesting(row,item);
               if (item.matchType) {
                 const match = document.createElement("button"); match.type = "button"; match.className = "open-match parent-link";
-                setText(match,"Open at match");
+                setText(match,t("Open at match"));
                 match.addEventListener("click",function () { openDetail(item.sessionId,null,false,{q:item.searchQuery || document.getElementById("query").value.trim()}).catch(function () {}); });
                 row.appendChild(match);
               }
@@ -4613,14 +4647,14 @@ enum WebUIRoutes {
           }
           if (token !== requestEpoch) return;
           acceptSessionsPage(more, page);
-          setStatus("signed in");
+          setStatus(t("signed in"));
           return token;
         }
         function showListError() {
           sessionsNode.setAttribute("aria-busy", "false");
           setText(document.getElementById("session-page-status"), "");
           setText(sessionsNode, "");
-          sessionsNode.appendChild(emptyState("alert", "Sessions could not be loaded", "Check the connection, then retry. If this server rejects last-activity ordering, select Started (legacy) and retry.", [["Retry", function () { refreshLibrary().catch(function () {}); }]]));
+          sessionsNode.appendChild(emptyState("alert", t("Sessions could not be loaded"), t("Check the connection, then retry. If this server rejects last-activity ordering, select Started (legacy) and retry."), [[t("Retry"), function () { refreshLibrary().catch(function () {}); }]]));
         }
         async function restoreSession() {
           const token = requestEpoch, displayVersion = identityDisplayVersion;
@@ -4635,7 +4669,7 @@ enum WebUIRoutes {
           try {
             response = await probe();
           } catch (error) {
-            if (token === requestEpoch) setStatus("Network unavailable");
+            if (token === requestEpoch) setStatus(t("Network unavailable"));
             return;
           }
           if (token !== requestEpoch) return;
@@ -4644,14 +4678,14 @@ enum WebUIRoutes {
             try {
               response = await probe();
             } catch (error) {
-              if (token === requestEpoch) setStatus("Network unavailable");
+              if (token === requestEpoch) setStatus(t("Network unavailable"));
               return;
             }
             if (token !== requestEpoch) return;
             if (response.status === 401) { await identitySignIn(false); return; }
           }
           if (!response.ok) {
-            if (token === requestEpoch) setStatus("Temporarily unavailable");
+            if (token === requestEpoch) setStatus(t("Temporarily unavailable"));
             return;
           }
           let page;
@@ -4659,11 +4693,11 @@ enum WebUIRoutes {
             const type = response.headers.get("content-type") || "";
             page = type.indexOf("application/json") >= 0 ? await response.json() : { items: [] };
           } catch (error) {
-            if (token === requestEpoch) setStatus("Temporarily unavailable");
+            if (token === requestEpoch) setStatus(t("Temporarily unavailable"));
             return;
           }
           if (token !== requestEpoch) return;
-          setStatus("signed in");
+          setStatus(t("signed in"));
           setSignedIn(true);
           setText(sessionsNode, "");
           showSessionList();
@@ -4676,7 +4710,7 @@ enum WebUIRoutes {
             try {
               const access = await api("GET", "/web/api/auth");
               if (displayVersion === identityDisplayVersion && !workspaceNode.hidden && access && typeof access.login === "string") {
-                const label = "Signed in as " + access.login;
+                const label = t("Signed in as {0}", [access.login]);
                 setText(document.getElementById("identity-status"), label);
                 if (token === requestEpoch) setStatus(label);
               }
@@ -4702,7 +4736,7 @@ enum WebUIRoutes {
             if (token !== requestEpoch) return;
             const detail = page.detail;
             if (!detail || !detail.session) {
-              setText(detailNode, "unavailable");
+              setText(detailNode, t("unavailable"));
               return;
             }
             const session = detail.session;
@@ -4739,9 +4773,9 @@ enum WebUIRoutes {
             document.getElementById("detail-view-timeline").disabled = !generation;
             showDetailView("transcript");
             if (!generation) {
-              const reason = typeof detail.transcriptAvailability === "string" && detail.transcriptAvailability !== "available" ? "Availability: " + detail.transcriptAvailability + "." : "";
-              messagesNode.appendChild(emptyState("inbox", "Transcript unavailable", ("The service has not admitted a readable transcript for this session. " + reason).trim()));
-              if (matchLanding) { openTranscriptFind(matchLanding.q); toast("Exact match position unavailable (transcript not admitted). Find is prefilled but no transcript messages are loaded.","info"); }
+              const reason = typeof detail.transcriptAvailability === "string" && detail.transcriptAvailability !== "available" ? t("Availability: {0}.", [t(detail.transcriptAvailability)]) : "";
+              messagesNode.appendChild(emptyState("inbox", t("Transcript unavailable"), (t("The service has not admitted a readable transcript for this session. {0}", [reason])).trim()));
+              if (matchLanding) { openTranscriptFind(matchLanding.q); toast(t("Exact match position unavailable (transcript not admitted). Find is prefilled but no transcript messages are loaded."),"info"); }
               return;
             }
             let provenMatch = null, matchReason = "unverified";
@@ -4753,16 +4787,16 @@ enum WebUIRoutes {
                 if (!match || match.sessionId !== session.sessionId || match.generation !== generation) throw new Error("changed match generation");
                 if (Number.isSafeInteger(match.messageOrdinal) && match.messageOrdinal >= 0 && match.messageOrdinal < 100000 && !match.reason && ["allTerms","firstTerm"].includes(match.matchScope)) provenMatch = match;
                 else matchReason = match.reason || "unverified";
-              } catch (error) { if (token !== requestEpoch || version !== routeVersion) return; matchReason = "unavailable or older server"; }
+              } catch (error) { if (token !== requestEpoch || version !== routeVersion) return; matchReason = t("unavailable or older server"); }
             }
             await loadMessages(token, session.sessionId, generation, provenMatch && typeof provenMatch.messageCursor === "string" ? provenMatch.messageCursor : "");
             if (matchLanding && token === requestEpoch && version === routeVersion) {
               if (provenMatch) {
                 await jumpToOrdinal(provenMatch.messageOrdinal);
-                if (provenMatch.matchScope === "firstTerm") toast("Landed on the first query term; all terms were not found in one message.","info");
+                if (provenMatch.matchScope === "firstTerm") toast(t("Landed on the first query term; all terms were not found in one message."),"info");
               } else {
                 writeRoute({page:"detail",id:session.sessionId,find:matchLanding.q});
-                openTranscriptFind(matchLanding.q); toast("Exact match position unavailable (" + matchReason + "). Find is prefilled; it searches loaded messages, not a guessed snippet position.","info");
+                openTranscriptFind(matchLanding.q); toast(t("Exact match position unavailable ({0}). Find is prefilled; it searches loaded messages, not a guessed snippet position.", [matchReason]),"info");
               }
               return;
             }
@@ -4816,7 +4850,7 @@ enum WebUIRoutes {
               wrap("a", url, function (node) { node.setAttribute("href", url); node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); setText(node, url); });
               i = end; continue;
             }
-            if (starts("![")) { parent.appendChild(textSpan("Image: ")); i += 1; }
+            if (starts("![")) { parent.appendChild(textSpan(t("Image: "))); i += 1; }
             if (starts("`")) {
               i += 1;
               const inner = takeUntil("`");
@@ -4892,15 +4926,15 @@ enum WebUIRoutes {
           const pre = block && block.querySelector("pre");
           const text = button.dataset.copyText != null ? button.dataset.copyText : pre ? pre.textContent : "";
           if (!button.dataset.copyLabel) button.dataset.copyLabel = button.textContent;
-          function failed() { setText(button, "Copy failed"); toast("Copy failed. Select the text and copy it manually.", "danger"); }
+          function failed() { setText(button, t("Copy failed")); toast(t("Copy failed. Select the text and copy it manually."), "danger"); }
           if (!(typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function")) { failed(); return; }
           let pending;
           try { pending = Promise.resolve(navigator.clipboard.writeText(text)); } catch (error) { failed(); return; }
           pending.then(function () {
-            setText(button, "Copied ✓");
+            setText(button, t("Copied ✓"));
             button.dataset.state = "copied";
-            toast("Copied to clipboard", "ok");
-            if (typeof setTimeout === "function") setTimeout(function () { setText(button, button.dataset.copyLabel || "Copy"); button.dataset.state = ""; }, 1600);
+            toast(t("Copied to clipboard"), "ok");
+            if (typeof setTimeout === "function") setTimeout(function () { setText(button, button.dataset.copyLabel || t("Copy")); button.dataset.state = ""; }, 1600);
           }, failed);
         }
         function renderRichText(root, raw) {
@@ -4969,15 +5003,15 @@ enum WebUIRoutes {
               const header = document.createElement("div");
               header.className = "code-header";
               const label = document.createElement("span");
-              setText(label, language || "Plain text");
+              setText(label, language || t("Plain text"));
               const button = document.createElement("button");
               button.type = "button";
               button.className = "copy-btn";
-              setText(button, "Copy");
+              setText(button, t("Copy"));
               button.addEventListener("click", function () { copyCode(button); });
               header.appendChild(label);
               header.appendChild(button);
-              const wrap = document.createElement("button"); wrap.type = "button"; setText(wrap, "Wrap");
+              const wrap = document.createElement("button"); wrap.type = "button"; setText(wrap, t("Wrap"));
               wrap.addEventListener("click", function () { block.classList.toggle("wrap-code"); wrap.setAttribute("aria-pressed", String(block.classList.contains("wrap-code"))); });
               header.appendChild(wrap);
               const pre = document.createElement("pre");
@@ -5099,7 +5133,7 @@ enum WebUIRoutes {
         function codeSection(parent, label, text) {
           const block = document.createElement("div"); block.className = "code-block";
           const header = document.createElement("div"); header.className = "code-header";
-          header.appendChild(textSpan(label)); header.appendChild(copyTextButton("Copy", text)); block.appendChild(header);
+          header.appendChild(textSpan(label)); header.appendChild(copyTextButton(t("Copy"), text)); block.appendChild(header);
           const pre = document.createElement("pre"); setText(pre, text); block.appendChild(pre); parent.appendChild(block); return block;
         }
         function renderUnifiedDiff(root, text) {
@@ -5124,7 +5158,7 @@ enum WebUIRoutes {
           });
           if (!seen || !valid || oldLeft || newLeft) return false;
           const pre = document.createElement("pre"); pre.className = "unified-diff";
-          const copy = copyTextButton("Copy diff", text); copy.classList.add("diff-copy"); root.appendChild(copy);
+          const copy = copyTextButton(t("Copy diff"), text); copy.classList.add("diff-copy"); root.appendChild(copy);
           rows.forEach(function (item, index) {
             const row = document.createElement("span"); row.className = "diff-row" + item.kind;
             if (item.number != null) row.setAttribute("data-line-number", item.number);
@@ -5138,35 +5172,35 @@ enum WebUIRoutes {
           const failed = toolError(output); if (failed) tools.className += " tool-error";
           const summary = document.createElement("summary");
           const primary = (typeof args.pattern === "string" ? ["pattern"] : ["file_path", "path", "command", "cmd", "url", "query"]).find(function (key) { return typeof args[key] === "string"; });
-          fillDisclosure(summary, call.name || "Tool", primary ? args[primary] + (primary === "pattern" && args.path ? " · " + args.path : "") : input);
-          if (Number.isFinite(args.offset)) summary.appendChild(textSpan("Line " + args.offset + (Number.isFinite(args.limit) ? " · " + args.limit + " lines" : "")));
-          if (failed) { const badge = textSpan("Error (detected)"); badge.className = "error-label"; summary.appendChild(badge); }
+          fillDisclosure(summary, call.name || t("Tool"), primary ? args[primary] + (primary === "pattern" && args.path ? " · " + args.path : "") : input);
+          if (Number.isFinite(args.offset)) summary.appendChild(textSpan(t("Line {0}{1}", [args.offset, Number.isFinite(args.limit) ? t(" · {0} lines", [args.limit]) : ""])));
+          if (failed) { const badge = textSpan(t("Error (detected)")); badge.className = "error-label"; summary.appendChild(badge); }
           tools.appendChild(summary);
           const body = document.createElement("div"); body.className = "tool-content";
-          const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "raw-toggle"; setText(toggle, "Raw"); body.appendChild(toggle);
+          const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "raw-toggle"; setText(toggle, t("Raw")); body.appendChild(toggle);
           const formatted = document.createElement("div"); formatted.className = "tool-formatted";
-          const h = document.createElement("h4"); setText(h, "Input"); formatted.appendChild(h);
+          const h = document.createElement("h4"); setText(h, t("Input")); formatted.appendChild(h);
           const edits = Array.isArray(args.edits) ? args.edits : [args]; let renderedEdit = false;
           if (/^(edit|multiedit|search_replace|str_replace.*)$/i.test(call.name || "")) edits.forEach(function (edit) {
             const old = edit.old_string != null ? edit.old_string : edit.old_str, next = edit.new_string != null ? edit.new_string : edit.new_str;
             if (typeof old !== "string" || typeof next !== "string") return;
             const nl = String.fromCharCode(10), oldLines = old ? old.split(nl) : [], newLines = next ? next.split(nl) : [];
-            const patch = ["--- provided old text", "+++ provided new text", "@@ -" + (oldLines.length ? 1 : 0) + "," + oldLines.length + " +" + (newLines.length ? 1 : 0) + "," + newLines.length + " @@"].concat(oldLines.map(function (line) { return "-" + line; }), newLines.map(function (line) { return "+" + line; })).join(nl);
-            formatted.appendChild(textSpan("Provided replacement · relative lines (not file positions)"));
+            const patch = [t("--- provided old text"), t("+++ provided new text"), "@@ -" + (oldLines.length ? 1 : 0) + "," + oldLines.length + " +" + (newLines.length ? 1 : 0) + "," + newLines.length + " @@"].concat(oldLines.map(function (line) { return "-" + line; }), newLines.map(function (line) { return "+" + line; })).join(nl);
+            formatted.appendChild(textSpan(t("Provided replacement · relative lines (not file positions)")));
             renderUnifiedDiff(formatted, patch); renderedEdit = true;
           });
-          if (!renderedEdit && !renderUnifiedDiff(formatted, input)) codeSection(formatted, /bash|shell/i.test(call.name || "") ? "$ Command / input" : "Input", input || "not reported");
-          const oh = document.createElement("h4"); setText(oh, "Output"); formatted.appendChild(oh);
+          if (!renderedEdit && !renderUnifiedDiff(formatted, input)) codeSection(formatted, /bash|shell/i.test(call.name || "") ? t("$ Command / input") : t("Input"), input || t("not reported"));
+          const oh = document.createElement("h4"); setText(oh, t("Output")); formatted.appendChild(oh);
           const result = document.createElement("div"); result.className = "tool-output";
-          if (!renderUnifiedDiff(result, output)) codeSection(result, "Output", output || "not reported");
+          if (!renderUnifiedDiff(result, output)) codeSection(result, t("Output"), output || t("not reported"));
           formatted.appendChild(result);
           if (output.split(String.fromCharCode(10)).length > 16) {
-            const more = document.createElement("button"); more.type = "button"; setText(more, "Show more output");
-            more.addEventListener("click", function () { result.classList.toggle("expanded"); setText(more, result.classList.contains("expanded") ? "Show less output" : "Show more output"); }); formatted.appendChild(more);
+            const more = document.createElement("button"); more.type = "button"; setText(more, t("Show more output"));
+            more.addEventListener("click", function () { result.classList.toggle("expanded"); setText(more, result.classList.contains("expanded") ? t("Show less output") : t("Show more output")); }); formatted.appendChild(more);
           }
           const raw = document.createElement("div"); raw.className = "tool-raw"; raw.hidden = true;
-          codeSection(raw, "Input (raw)", input); codeSection(raw, "Output (raw)", output);
-          toggle.addEventListener("click", function () { raw.hidden = !raw.hidden; formatted.hidden = !raw.hidden; setText(toggle, raw.hidden ? "Raw" : "Formatted"); });
+          codeSection(raw, t("Input (raw)"), input); codeSection(raw, t("Output (raw)"), output);
+          toggle.addEventListener("click", function () { raw.hidden = !raw.hidden; formatted.hidden = !raw.hidden; setText(toggle, raw.hidden ? t("Raw") : t("Formatted")); });
           body.appendChild(formatted); body.appendChild(raw); tools.appendChild(body); return tools;
         }
         // Deliberately lexical, not a compiler. Unsupported/ambiguous constructs fail plain, never partially color.
@@ -5281,22 +5315,22 @@ enum WebUIRoutes {
           if (kind === "user") { promptNumber += 1; turnUsageNode = null; turnUsage = null; }
           if ((kind === "user" || kind === "assistant") && start) {
             const roleNode = document.createElement("div"); roleNode.className = "role";
-            setText(roleNode, kind === "user" ? "You" : (detailSource ? sourceLabel(detailSource) : (role || "assistant"))); article.appendChild(roleNode);
+            setText(roleNode, kind === "user" ? t("You") : (detailSource ? sourceLabel(detailSource) : (t(role || "assistant")))); article.appendChild(roleNode);
           }
           const meta = document.createElement("div"); meta.className = "message-meta";
-          if (kind === "user") meta.appendChild(textSpan(((transcriptMessages.length ? transcriptMessages[0].ordinal : ordinal) > 0 ? "Loaded prompt #" : "Prompt #") + promptNumber));
+          if (kind === "user") meta.appendChild(textSpan(((transcriptMessages.length ? transcriptMessages[0].ordinal : ordinal) > 0 ? t("Loaded prompt #") : t("Prompt #")) + promptNumber));
           if (payload.timestamp) meta.appendChild(textSpan(payload.timestamp));
           const link = document.createElement("a"); link.setAttribute("href", "#/s/" + encodeURIComponent(detailContextSession) + "/m/" + ordinal); setText(link, "#" + ordinal);
-          link.setAttribute("aria-label", "Message " + ordinal + " permalink");
+          link.setAttribute("aria-label", t("Message {0} permalink", [ordinal]));
           // Addressable ordinal permalink; the jump is fenced and bounded.
           link.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); meta.appendChild(link);
-          if (start) { const copyLink = copyTextButton("Copy link", window.location.origin + "/web" + link.getAttribute("href")); copyLink.className = "permalink-copy"; meta.appendChild(copyLink); }
+          if (start) { const copyLink = copyTextButton(t("Copy link"), window.location.origin + "/web" + link.getAttribute("href")); copyLink.className = "permalink-copy"; meta.appendChild(copyLink); }
           if (kind === "assistant") {
             if (!turnUsageNode || start) { turnUsageNode = textSpan(""); turnUsageNode.className = "turn-usage"; turnUsage = { input: 0, output: 0, cache: 0 }; meta.appendChild(turnUsageNode); }
             if (payload.usage && Number.isFinite(payload.usage.inputTokens) && Number.isFinite(payload.usage.outputTokens)) {
               turnUsage.input += payload.usage.inputTokens; turnUsage.output += payload.usage.outputTokens;
               turnUsage.cache += (payload.usage.cacheReadTokens || 0) + (payload.usage.cacheCreationTokens || 0);
-              setText(turnUsageNode, turnUsage.input + " in → " + turnUsage.output + " out" + (turnUsage.cache ? " · " + turnUsage.cache + " cache" : ""));
+              setText(turnUsageNode, t("{0} in → {1} out", [turnUsage.input, turnUsage.output]) + (turnUsage.cache ? t(" · {0} cache", [turnUsage.cache]) : ""));
             }
           }
           article.appendChild(meta);
@@ -5308,16 +5342,16 @@ enum WebUIRoutes {
             body = document.createElement("details");
             if (thinking) body.className = "thinking";
             const summary = document.createElement("summary");
-            fillDisclosure(summary, thinking ? "Thinking (detected)" : kind === "tool" ? (related ? "Result · " + (priorCall.name || "Tool") + " (proximity)" : "Result") : content.indexOf("<teammate-message") === 0 ? "System · Agent communication (detected)" : content.indexOf("<") === 0 ? "System · Hook / meta (detected)" : "System prompt", content);
+            fillDisclosure(summary, thinking ? t("Thinking (detected)") : kind === "tool" ? (related ? t("Result · {0} (proximity)", [priorCall.name || t("Tool")]) : t("Result")) : content.indexOf("<teammate-message") === 0 ? t("System · Agent communication (detected)") : content.indexOf("<") === 0 ? t("System · Hook / meta (detected)") : t("System prompt"), content);
             if (kind === "tool" && toolError(content)) {
-              body.classList.add("tool-error"); const badge = textSpan("Error (detected)"); badge.className = "error-label"; summary.appendChild(badge);
+              body.classList.add("tool-error"); const badge = textSpan(t("Error (detected)")); badge.className = "error-label"; summary.appendChild(badge);
             }
             body.appendChild(summary); const pre = document.createElement("pre"); setText(pre, content); body.appendChild(pre); article.appendChild(body);
           } else if (content.trim() || calls.length === 0) {
             body = document.createElement("div"); body.className = "body"; renderRichText(body, content); article.appendChild(body);
             ["h1", "h2", "h3", "h4", "h5", "h6"].forEach(function (tag) { body.querySelectorAll(tag).forEach(function (heading) {
               const anchor = document.createElement("a"); anchor.className = "heading-link"; anchor.setAttribute("href", link.getAttribute("href")); setText(anchor, "#");
-              anchor.setAttribute("aria-label", "Link to message " + ordinal); anchor.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); heading.appendChild(anchor);
+              anchor.setAttribute("aria-label", t("Link to message {0}", [ordinal])); anchor.addEventListener("click", function (event) { event.preventDefault(); jumpToOrdinal(ordinal); }); heading.appendChild(anchor);
             }); });
           }
           const toolNodes = calls.map(function (call) { const node = renderTool(call); article.appendChild(node); return node; });
@@ -5326,7 +5360,7 @@ enum WebUIRoutes {
           // Batch derived controls after a fragment page, not once per message (important for long sessions).
           if (!messageRequest) updateTranscript();
         }
-        const transcriptTypes = [["all", "All"], ["user", "You"], ["assistant", "Agent"], ["tools", "Tools"], ["thinking", "Thinking"], ["errors", "Errors"], ["system", "System"]];
+        const transcriptTypes = [["all", t("All")], ["user", t("You")], ["assistant", t("Agent")], ["tools", t("Tools")], ["thinking", t("Thinking")], ["errors", t("Errors")], ["system", t("System")]];
         function transcriptMatches(item, type) {
           if (type === "all") return true;
           if (type === "tools") return item.kind === "tool" || item.tools.length > 0;
@@ -5341,7 +5375,7 @@ enum WebUIRoutes {
           transcriptTypes.forEach(function (type) {
             const count = type[0] === "tools" ? transcriptMessages.reduce(function (n, item) { return n + item.tools.length + (item.kind === "tool" ? 1 : 0); }, 0) : transcriptMessages.filter(function (item) { return transcriptMatches(item, type[0]); }).length;
             const button = document.createElement("button"); button.type = "button"; button.dataset.type = type[0]; setText(button, type[1] + " " + count);
-            filters.setAttribute("aria-label", "Message types in loaded messages");
+            filters.setAttribute("aria-label", t("Message types in loaded messages"));
             button.setAttribute("aria-pressed", String(transcriptFilter === type[0]));
             button.addEventListener("click", function () { transcriptFilter = type[0]; transcriptStep = -1; updateTranscript(); }); filters.appendChild(button);
             if (focusedType === type[0]) focusVisible(button);
@@ -5351,10 +5385,10 @@ enum WebUIRoutes {
             if (item.body) item.body.hidden = transcriptFilter === "tools" && item.kind !== "tool";
             item.tools.forEach(function (node) { node.hidden = !["all", "tools", "errors"].includes(transcriptFilter); });
           });
-          setText(document.getElementById("transcript-loaded"), transcriptMessages.length + (messageTotal == null ? " loaded" : " of " + messageTotal + " loaded") + (messageCursor ? " · more available" : ""));
+          setText(document.getElementById("transcript-loaded"), (messageTotal == null ? t("{0} loaded", [transcriptMessages.length]) : t("{0} of {1} loaded", [transcriptMessages.length, messageTotal])) + (messageCursor ? t(" · more available") : ""));
           document.getElementById("transcript-load-all").hidden = !messageCursor;
           document.getElementById("transcript-load-all").disabled = transcriptAllBusy;
-          if (messageCursor) setText(moreMessagesNode, "Load more (" + transcriptMessages.length + " loaded)");
+          if (messageCursor) setText(moreMessagesNode, t("Load more ({0} loaded)", [transcriptMessages.length]));
           renderTranscriptOutline(); renderTranscriptMinimap(); updateDetailInfoCoverage(); updateTranscriptFind();
         }
         function renderTranscriptOutline() {
@@ -5368,9 +5402,9 @@ enum WebUIRoutes {
             const nextLoaded = transcriptMessages.find(function (item) { return item.kind === "user" && item.ordinal > entry.index; });
             const end = Math.min(next ? next.index : Infinity, nextLoaded ? nextLoaded.ordinal : Infinity);
             const toolNames = new Map();
-            const tools = transcriptMessages.filter(function (item) { return item.ordinal >= entry.index && item.ordinal < end; }).reduce(function (sum, item) { (item.payload.toolCalls || []).forEach(function (call) { const name = call.name || "Tool"; toolNames.set(name, (toolNames.get(name) || 0) + 1); }); return sum + item.tools.length; }, 0);
+            const tools = transcriptMessages.filter(function (item) { return item.ordinal >= entry.index && item.ordinal < end; }).reduce(function (sum, item) { (item.payload.toolCalls || []).forEach(function (call) { const name = call.name || t("Tool"); toolNames.set(name, (toolNames.get(name) || 0) + 1); }); return sum + item.tools.length; }, 0);
             const button = document.createElement("button"); button.type = "button"; button.dataset.ordinal = String(entry.index);
-            setText(button, "#" + entry.index + " · " + clipPreview(entry.preview) + " · " + tools + " tools in loaded" + (toolNames.size ? " (" + Array.from(toolNames).map(function (pair) { return pair[1] + " " + pair[0]; }).join(" · ") + ")" : "") + (entry.timestamp ? " · " + recordedTime(entry.timestamp) : "") + (loaded ? "" : " · not loaded"));
+            setText(button, t("#{0} · {1} · {2} tools in loaded{3}{4}{5}", [entry.index, clipPreview(entry.preview), tools, toolNames.size ? " (" + Array.from(toolNames).map(function (pair) { return pair[1] + " " + pair[0]; }).join(" · ") + ")" : "", entry.timestamp ? " · " + recordedTime(entry.timestamp) : "", loaded ? "" : t(" · not loaded")]));
             button.setAttribute("aria-current", String(activeOutlineOrdinal === entry.index));
             button.addEventListener("click", function () { jumpToOrdinal(entry.index); }); root.appendChild(button);
           });
@@ -5408,16 +5442,16 @@ enum WebUIRoutes {
             button.dataset.loaded = String(group.loaded); button.dataset.known = String(group.known);
             const size = group.end - group.start + 1;
             button.className = group.loaded === size ? "map-loaded" : group.loaded ? "map-partial" : "map-unloaded";
-            const label = "Jump to #" + group.start + (size > 1 ? " · range #" + group.start + "–#" + group.end : "") + " · " + group.loaded + " / " + size + " loaded · " + group.known + " timeline known" + (group.loaded < size ? " · not loaded in part or whole" : "");
+            const label = t("Jump to #{0}{1} · {2} / {3} loaded · {4} timeline known{5}", [group.start, size > 1 ? t(" · range #{0}–#{1}", [group.start, group.end]) : "", group.loaded, size, group.known, group.loaded < size ? t(" · not loaded in part or whole") : ""]);
             button.title = label; button.setAttribute("aria-label", label); setText(button, String(group.start));
             button.addEventListener("click", function () { jumpToOrdinal(group.start); });
             root.appendChild(button);
             if (focused === String(group.start)) focusVisible(button);
           });
           const visible = transcriptMessages.filter(function (item) { return !item.article.hidden; }).length;
-          setText(document.getElementById("transcript-minimap-status"), loaded.size + " / " + (reported == null ? total + "+ known ordinal extent (total unknown)" : total) + " loaded · " + visible + " visible · " + known.size + " timeline known. " + (total > 120 ? "Grouped ordinal ranges; jumps target each range start. " : "") + "Unloaded targets: at most 5 pages per jump; try again to continue.");
+          setText(document.getElementById("transcript-minimap-status"), t("{0} / {1} loaded · {2} visible · {3} timeline known. {4}Unloaded targets: at most 5 pages per jump; try again to continue.", [loaded.size, reported == null ? t("{0}+ known ordinal extent (total unknown)", [total]) : total, visible, known.size, total > 120 ? t("Grouped ordinal ranges; jumps target each range start. ") : ""]));
           document.getElementById("transcript-minimap-more").hidden = detailTimeline.loaded && detailTimeline.next == null;
-          setText(document.getElementById("transcript-minimap-more"), detailTimeline.loaded ? "More map timeline" : "Load map timeline (optional)");
+          setText(document.getElementById("transcript-minimap-more"), detailTimeline.loaded ? t("More map timeline") : t("Load map timeline (optional)"));
           updateMinimapViewport();
         }
         function updateMinimapViewport() {
@@ -5437,7 +5471,7 @@ enum WebUIRoutes {
             button.setAttribute("aria-current",String(minimapSelected != null && minimapSelected >= start && minimapSelected <= end));
             button.setAttribute("data-viewport",String(visible.some(function (ordinal) { return ordinal >= start && ordinal <= end; })));
           });
-          setText(document.getElementById("transcript-minimap-position"), (minimapSelected == null ? "No jump selected" : "Selected #" + minimapSelected + (transcriptMessages.some(function (item) { return item.ordinal === minimapSelected; }) ? " · loaded" : " · not loaded")) + " · Viewport: " + (inView.size ? "#" + visible[0] + "–#" + visible[visible.length - 1] + " (" + inView.size + " visible messages)" : "no transcript messages in view"));
+          setText(document.getElementById("transcript-minimap-position"), t("{0} · Viewport: {1}", [minimapSelected == null ? t("No jump selected") : t("Selected #{0}{1}", [minimapSelected, transcriptMessages.some(function (item) { return item.ordinal === minimapSelected; }) ? t(" · loaded") : t(" · not loaded")]), inView.size ? t("#{0}–#{1} ({2} visible messages)", [visible[0], visible[visible.length - 1], inView.size]) : t("no transcript messages in view")]));
         }
         let jumpVersion = 0;
         async function jumpToOrdinal(ordinal, routed) {
@@ -5449,13 +5483,13 @@ enum WebUIRoutes {
           while (!transcriptMessages.some(function (item) { return item.ordinal === ordinal; }) && messageCursor && budget.remaining > 0 && token === requestEpoch && version === jumpVersion) {
             if (messageRequest) break;
             try { await loadMessages(token, messageSessionId, messageGeneration, messageCursor, budget); }
-            catch (error) { if (token === requestEpoch && version === jumpVersion) toast("Message could not be loaded. Try the link again.", "danger"); return; }
+            catch (error) { if (token === requestEpoch && version === jumpVersion) toast(t("Message could not be loaded. Try the link again."), "danger"); return; }
           }
           if (token !== requestEpoch) return;
           if (version !== jumpVersion) return;
           updateMinimapViewport();
           const item = transcriptMessages.find(function (candidate) { return candidate.ordinal === ordinal; });
-          if (!item) { toast(messageCursor ? "Message not loaded. Use Load more or try the link again (5-page jump limit)." : "Message missing from the available transcript.", "warning"); return; }
+          if (!item) { toast(messageCursor ? t("Message not loaded. Use Load more or try the link again (5-page jump limit).") : t("Message missing from the available transcript."), "warning"); return; }
           transcriptFilter = "all"; activeOutlineOrdinal = ordinal; updateTranscript();
           if (typeof item.article.scrollIntoView === "function") item.article.scrollIntoView({ block: "start", behavior: "instant" });
           item.article.classList.add("jump-target");
@@ -5490,7 +5524,7 @@ enum WebUIRoutes {
               // Yield between pages. No eagerly fetched huge-session history on opening.
               if (typeof requestAnimationFrame === "function") await new Promise(function (resolve) { requestAnimationFrame(resolve); });
             }
-          } catch (error) { if (token === requestEpoch) toast("Could not load more messages. Retry Load more.", "danger"); }
+          } catch (error) { if (token === requestEpoch) toast(t("Could not load more messages. Retry Load more."), "danger"); }
           finally { if (token === requestEpoch && version === detailExtrasVersion) { transcriptAllBusy = false; updateTranscript(); } }
         }
         function detailInfoCoverage() {
@@ -5500,13 +5534,13 @@ enum WebUIRoutes {
         function updateDetailInfoCoverage() {
           const values = detailInfoCoverage();
           document.getElementById("detail-info-content").querySelectorAll(".info-coverage").forEach(function (node) {
-            const value = values[node.dataset.coverage]; setText(node, value == null || value === "" ? "not reported" : String(value));
+            const value = values[node.dataset.coverage]; setText(node, value == null || value === "" ? t("not reported") : String(value));
           });
         }
         async function loadDetailInfo() {
           if (!detailContextSession || (detailInfoBusy && detailInfoEpoch === requestEpoch)) return;
           const id = detailContextSession, token = requestEpoch, version = detailExtrasVersion;
-          const root = document.getElementById("detail-info-content"); detailInfoBusy = true; detailInfoEpoch = token; setText(root, "Loading session info…");
+          const root = document.getElementById("detail-info-content"); detailInfoBusy = true; detailInfoEpoch = token; setText(root, t("Loading session info…"));
           const params = new URLSearchParams({sessionId:id, agents:"all", limit:"1"});
           try {
             const results = await Promise.all([
@@ -5516,35 +5550,35 @@ enum WebUIRoutes {
             // Each read can expire the session while its sibling succeeds.
             if (token !== requestEpoch || version !== detailExtrasVersion || id !== detailContextSession) return;
             setText(root, ""); const dl = document.createElement("dl"); root.appendChild(dl);
-            function field(label, value) { const dt = document.createElement("dt"), dd = document.createElement("dd"); setText(dt, label); setText(dd, value == null || value === "" ? "not reported" : String(value)); dl.appendChild(dt); dl.appendChild(dd); return dd; }
+            function field(label, value) { const dt = document.createElement("dt"), dd = document.createElement("dd"); setText(dt, label); setText(dd, value == null || value === "" ? t("not reported") : String(value)); dl.appendChild(dt); dl.appendChild(dd); return dd; }
             const detail = detailInfoDetail || {}, session = detail.session || {}, identity = session.captureIdentity || {};
-            field("Session ID", id); root.appendChild(copyTextButton("Copy session ID", id));
-            const native = field("Native ID", session.nativeId), machine = field("Machine ID", identity.machineId);
-            if (session.nativeId) native.appendChild(copyTextButton("Copy native ID", session.nativeId));
-            if (identity.machineId) machine.appendChild(copyTextButton("Copy machine ID", identity.machineId)); field("Source", session.source ? sourceLabel(session.source) : null);
-            const project = field("Project", session.projectLabel || session.projectKey);
+            field(t("Session ID"), id); root.appendChild(copyTextButton(t("Copy session ID"), id));
+            const native = field(t("Native ID"), session.nativeId), machine = field(t("Machine ID"), identity.machineId);
+            if (session.nativeId) native.appendChild(copyTextButton(t("Copy native ID"), session.nativeId));
+            if (identity.machineId) machine.appendChild(copyTextButton(t("Copy machine ID"), identity.machineId)); field(t("Source"), session.source ? sourceLabel(session.source) : null);
+            const project = field(t("Project"), session.projectLabel || session.projectKey);
             if (session.projectKey) {
-              const filter = document.createElement("button"); filter.type = "button"; setText(filter, "Sessions in project");
+              const filter = document.createElement("button"); filter.type = "button"; setText(filter, t("Sessions in project"));
               filter.addEventListener("click", function () {
                 facets.project.selected.clear(); facets.project.selected.set(session.projectKey, session.projectLabel || session.projectKey);
                 updateFacetSummary("project"); renderFacets("project"); showSessionList(); refreshLibrary().catch(function () {});
               }); project.appendChild(filter);
             }
-            field("Generation", detail.transcriptGeneration);
-            field("Transcript", detail.transcriptAvailability); field("Attempt", detail.currentAttempt ? [detail.currentAttempt.status, detail.currentAttempt.failureCode].filter(Boolean).join(" · ") : null);
+            field(t("Generation"), detail.transcriptGeneration);
+            field(t("Transcript"), detail.transcriptAvailability ? t(detail.transcriptAvailability) : null); field(t("Attempt"), detail.currentAttempt ? [t(detail.currentAttempt.status || "unknown"), detail.currentAttempt.failureCode].filter(Boolean).join(" · ") : null);
             const perSession = results[0] && Array.isArray(results[0].items) ? results[0].items.find(function (item) { return item.session && item.session.sessionId === id; }) : null;
             const costs = results[1], totals = costs && costs.totals;
-            field("Model", perSession && perSession.model);
-            field("Cost (USD)", perSession && Number.isFinite(perSession.costUsd) ? "$" + perSession.costUsd.toFixed(2) : null);
-            ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"].forEach(function (key) { field(key, perSession && Number.isFinite(perSession[key]) ? perSession[key] : totals && Number.isFinite(totals[key]) ? totals[key] : null); });
-            if (costs && Array.isArray(costs.items)) costs.items.forEach(function (item) { field("Model usage · " + item.label, Number.isFinite(item.inputTokens) && Number.isFinite(item.outputTokens) ? item.inputTokens + " in → " + item.outputTokens + " out" : null); });
-            field("Unpriced coverage", costs ? (costs.unpricedUnattributedSessions == null ? "not reported" : costs.unpricedUnattributedSessions + " unattributed sessions") + " · " + (costs.unpricedNoPriceSessions == null ? "not reported" : costs.unpricedNoPriceSessions + " sessions without price") : null);
+            field(t("Model"), perSession && perSession.model);
+            field(t("Cost (USD)"), perSession && Number.isFinite(perSession.costUsd) ? "$" + perSession.costUsd.toFixed(2) : null);
+            ["inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"].forEach(function (key) { field(t(key), perSession && Number.isFinite(perSession[key]) ? perSession[key] : totals && Number.isFinite(totals[key]) ? totals[key] : null); });
+            if (costs && Array.isArray(costs.items)) costs.items.forEach(function (item) { field(t("Model usage · {0}", [item.label]), Number.isFinite(item.inputTokens) && Number.isFinite(item.outputTokens) ? t("{0} in → {1} out", [item.inputTokens, item.outputTokens]) : null); });
+            field(t("Unpriced coverage"), costs ? (costs.unpricedUnattributedSessions == null ? t("not reported") : t("{0} unattributed sessions", [costs.unpricedUnattributedSessions])) + " · " + (costs.unpricedNoPriceSessions == null ? t("not reported") : t("{0} sessions without price", [costs.unpricedNoPriceSessions])) : null);
             const coverage = detailInfoCoverage();
-            Object.keys(coverage).forEach(function (label) { const node = field(label, coverage[label]); node.className = "info-coverage"; node.dataset.coverage = label; });
-            const note = document.createElement("p"); setText(note, "Missing values are not reported, not zero. Model comes only from recorded session cost data; it is never inferred from the source."); root.appendChild(note);
+            Object.keys(coverage).forEach(function (label) { const node = field(t(label), coverage[label]); node.className = "info-coverage"; node.dataset.coverage = label; });
+            const note = document.createElement("p"); setText(note, t("Missing values are not reported, not zero. Model comes only from recorded session cost data; it is never inferred from the source.")); root.appendChild(note);
             if (!results[0] || !results[1]) {
-              const missing = document.createElement("p"); setText(missing, "Cost data unavailable. Missing values are not reported."); root.appendChild(missing);
-              const retry = document.createElement("button"); retry.type = "button"; setText(retry, "Retry cost data"); retry.addEventListener("click", loadDetailInfo); root.appendChild(retry);
+              const missing = document.createElement("p"); setText(missing, t("Cost data unavailable. Missing values are not reported.")); root.appendChild(missing);
+              const retry = document.createElement("button"); retry.type = "button"; setText(retry, t("Retry cost data")); retry.addEventListener("click", loadDetailInfo); root.appendChild(retry);
             }
             detailInfoLoaded = true;
           } finally { if (detailInfoEpoch === token && version === detailExtrasVersion) detailInfoBusy = false; }
@@ -5577,7 +5611,7 @@ enum WebUIRoutes {
         }); });
         document.getElementById("transcript-copy-id").addEventListener("click", function () { this.dataset.copyText = detailContextSession; copyCode(this); });
         document.getElementById("transcript-copy").addEventListener("click", function () {
-          this.dataset.copyText = transcriptMessages.map(function (item) { return "## " + item.kind + " (#" + item.ordinal + ")" + String.fromCharCode(10) + item.content + (item.payload.toolCalls || []).map(function (call) { return String.fromCharCode(10) + (call.name || "Tool") + String.fromCharCode(10) + toolJSON(call.input) + String.fromCharCode(10) + toolJSON(call.output); }).join(""); }).join(String.fromCharCode(10, 10)); copyCode(this);
+          this.dataset.copyText = transcriptMessages.map(function (item) { return "## " + item.kind + " (#" + item.ordinal + ")" + String.fromCharCode(10) + item.content + (item.payload.toolCalls || []).map(function (call) { return String.fromCharCode(10) + (call.name || t("Tool")) + String.fromCharCode(10) + toolJSON(call.input) + String.fromCharCode(10) + toolJSON(call.output); }).join(""); }).join(String.fromCharCode(10, 10)); copyCode(this);
         });
         function acceptFragment(fragment) {
           const piece = encoder.encode(fragment.payloadFragment || "");
@@ -5585,17 +5619,17 @@ enum WebUIRoutes {
           const hash = fragment.payloadSHA256;
           if (!messageBuf || messageBuf.ordinal !== ordinal || messageBuf.hash !== hash) {
             if (messageBuf) {
-              setStatus("incomplete message");
+              setStatus(t("incomplete message"));
               return;
             }
             if (fragment.utf8Offset !== 0) {
-              setStatus("invalid fragment offset");
+              setStatus(t("invalid fragment offset"));
               return;
             }
             messageBuf = { ordinal: ordinal, hash: hash, chunks: [piece], bytes: piece.length, role: fragment.role };
           } else {
             if (fragment.utf8Offset !== messageBuf.bytes) {
-              setStatus("invalid fragment offset");
+              setStatus(t("invalid fragment offset"));
               return;
             }
             messageBuf.chunks.push(piece);
@@ -5633,7 +5667,7 @@ enum WebUIRoutes {
             if (page.nextCursor && page.nextCursor === cursor) throw new Error("repeated message cursor");
             messageCursor = page.nextCursor || "";
             updateMessageMore(); updateTranscript();
-            if (messageBuf && !messageCursor) setStatus("incomplete message");
+            if (messageBuf && !messageCursor) setStatus(t("incomplete message"));
             if (messageBuf && messageCursor) {
               if (messageRequest === pending) messageRequest = null;
               await loadMessages(token, sessionId, generation, messageCursor, budget);
@@ -5657,8 +5691,8 @@ enum WebUIRoutes {
           const input = document.getElementById("query"), value = input.value.trim(), version = searchInputVersion;
           const length = Array.from(value).length, minimum = activePage === "search" ? 2 : 3;
           if (length && length < minimum) {
-            setStatus("Short query: submit manually, or open Search for short terms.");
-            setText(document.getElementById("search-result-status"), "Short query: submit manually" + (activePage === "sessions" ? " or use Search for 1–2 character terms." : " to search this term."));
+            setStatus(t("Short query: submit manually, or open Search for short terms."));
+            setText(document.getElementById("search-result-status"), t("Short query: submit manually{0}", [activePage === "sessions" ? t(" or use Search for 1–2 character terms.") : t(" to search this term.")]));
             return;
           }
           if (typeof setTimeout === "function") searchTimer = setTimeout(function () {
@@ -5723,11 +5757,12 @@ enum WebUIRoutes {
         function availableCommands() {
           if (workspaceNode.hidden) return [];
           const result = ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].map(function (page) {
-            return {kind:"page", value:page, label:page === "fleet" ? "Machines · Fleet" : page[0].toUpperCase() + page.slice(1), scope:"Page"};
+            const english = page === "fleet" ? "Machines · Fleet" : page[0].toUpperCase() + page.slice(1);
+            return {kind:"page", value:page, label:t(english), searchLabels:[english, uiMessages[english]], scope:t("Page")};
           });
-          commandSessions.forEach(function (item) { result.push({kind:"session", value:item.id, label:item.label, scope:"Loaded session"}); });
+          commandSessions.forEach(function (item) { result.push({kind:"session", value:item.id, label:item.label, scope:t("Loaded session")}); });
           if (workspaceNode.classList.contains("showing-detail") && detailContextSession) {
-            const add = function (value, label) { result.push({kind:"action", value:value, label:label, scope:"Current session"}); };
+            const add = function (value, label) { result.push({kind:"action", value:value, label:t(label), searchLabels:[label, uiMessages[label]], scope:t("Current session")}); };
             add("info", "Session info");
             if (detailContextGeneration) {
               add("find", "Find in loaded messages");
@@ -5758,6 +5793,10 @@ enum WebUIRoutes {
           }
           return 300 + gaps + first;
         }
+        function commandMatchScore(item, query) {
+          const scores = [item.label].concat(item.searchLabels || []).filter(Boolean).map(function (label) { return commandScore(label, query); }).filter(function (score) { return score >= 0; });
+          return scores.length ? Math.min.apply(null, scores) : -1;
+        }
         function selectCommand(index) {
           commandIndex = commandResults.length ? (index + commandResults.length) % commandResults.length : -1;
           const input = document.getElementById("command-query"), rows = document.getElementById("command-results").children;
@@ -5772,7 +5811,7 @@ enum WebUIRoutes {
           if (!commandPaletteVisible()) return;
           commandRevision += 1;
           const revision = commandRevision, query = document.getElementById("command-query").value;
-          const matches = availableCommands().map(function (item, order) { return {item:item, order:order, score:commandScore(item.label, query)}; })
+          const matches = availableCommands().map(function (item, order) { return {item:item, order:order, score:commandMatchScore(item, query)}; })
             .filter(function (match) { return match.score >= 0; }).sort(function (a,b) { return a.score - b.score || a.order - b.order; });
           commandResults = matches.slice(0, 60).map(function (match) { return match.item; });
           const root = document.getElementById("command-results"); setText(root, "");
@@ -5782,8 +5821,8 @@ enum WebUIRoutes {
             setText(title, item.label); scope.className = "meta"; setText(scope, item.scope); row.appendChild(title); row.appendChild(scope);
             row.addEventListener("click", function () { dispatchCommand(index, revision); }); root.appendChild(row);
           });
-          setText(document.getElementById("command-scope"), "Pages, current-session actions and " + plural(commandSessions.length, "loaded session") + "; not global search. Open Search for the full library.");
-          setText(document.getElementById("command-status"), matches.length ? plural(matches.length, "command") + (matches.length > 60 ? " · showing first 60; refine your query" : "") : "No commands match. Try a page or loaded session title.");
+          setText(document.getElementById("command-scope"), t("Pages, current-session actions and {0}; not global search. Open Search for the full library.", [plural(commandSessions.length, t("loaded session"))]));
+          setText(document.getElementById("command-status"), matches.length ? plural(matches.length, "command") + (matches.length > 60 ? t(" · showing first 60; refine your query") : "") : t("No commands match. Try a page or loaded session title."));
           selectCommand(0);
         }
         function openCommandPalette() {
@@ -5916,6 +5955,13 @@ enum WebUIRoutes {
           link.insertBefore(icon(name), link.firstChild);
         });
         document.getElementById("search-query").appendChild(icon("search"));
+        const commandTrigger = document.getElementById("command-trigger");
+        commandTrigger.insertBefore(icon("search"), commandTrigger.firstChild);
+        const shortcut = commandTrigger.querySelector("kbd");
+        if (shortcut) setText(shortcut, /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘ K" : "Ctrl K");
+        document.getElementById("ui-language").addEventListener("change", function () {
+          changeUILanguage(this.value, !!authWriteTail || settingsWriteBusy || aiConfigBusy || relationshipWritePending || insightSavePending || sessionActionPending || batchTitlePending);
+        });
         document.getElementById("project-find").addEventListener("click", function () { loadFacets("project", false); });
         document.getElementById("project-query").addEventListener("keydown", function (event) {
           if (event.key === "Enter") { event.preventDefault(); loadFacets("project", false); }

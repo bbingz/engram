@@ -208,6 +208,7 @@
 		316971CC9E74C1543BFCEE27 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F6CE6BE94396893A17508F6 /* OnboardingTests.swift */; };
 		31CCDE8949919CD01EF1A5B0 /* EngramServiceWebUsageModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78487750268B9A2D9BCFCBF8 /* EngramServiceWebUsageModels.swift */; };
 		31FE98FAB337A9FD79A47FB8 /* WebMetadataHTTPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EACF31B9449032710883B9C1 /* WebMetadataHTTPTests.swift */; };
+		323E523296FCE2AEAB747A31 /* WebUILocalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 665CCDC1BC0C96F2C8CF35F1 /* WebUILocalization.swift */; };
 		334010BEDD7D6C2C233549F1 /* StartupUsageCollectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DC259CB8BB5FAC03715364 /* StartupUsageCollectorTests.swift */; };
 		339A1FBA2BB3F32057C9B3FC /* AGENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = 0341FAB9895067C5C7F9DAB4 /* AGENTS.md */; };
 		33AE281B946683761C5B6EF7 /* OpenCodeAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1980E982CA558FC94B9D15B /* OpenCodeAdapter.swift */; };
@@ -1625,6 +1626,7 @@
 		6607FBDF5FFB473323EBA333 /* SessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsTests.swift; sourceTree = "<group>"; };
 		663E8B62FCFF1F8E8CC1C0A7 /* ArchiveReclamationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveReclamationPolicyTests.swift; sourceTree = "<group>"; };
 		6657485996BD6F4F23A89F71 /* RecoverMigrationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverMigrationsTests.swift; sourceTree = "<group>"; };
+		665CCDC1BC0C96F2C8CF35F1 /* WebUILocalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebUILocalization.swift; sourceTree = "<group>"; };
 		6679DDE26217E2DD398B77D9 /* CaptureIngestLedgerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureIngestLedgerTests.swift; sourceTree = "<group>"; };
 		67732E532A4FF2BA35D84743 /* MCPProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPProtocol.swift; sourceTree = "<group>"; };
 		67C03A12BF8F24EA3BC60214 /* TranscriptFindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptFindTests.swift; sourceTree = "<group>"; };
@@ -3228,6 +3230,7 @@
 				3C1BF981404F36D6A19CCE39 /* WebFleetRoutes.swift */,
 				46E5426B9B889D94887E59DF /* WebReadRoutes.swift */,
 				1DE295B8B9CC9FA197017915 /* WebRequestBoundary.swift */,
+				665CCDC1BC0C96F2C8CF35F1 /* WebUILocalization.swift */,
 				C8D0DE92B2925A930FAF5D42 /* WebUIRoutes.swift */,
 				ED68195BBABE9EBA6F4BC41B /* WebWriteRoutes.swift */,
 			);
@@ -5277,6 +5280,7 @@
 				1BD49F81ABF6608192F3CBAE /* WebFleetRoutes.swift in Sources */,
 				9CB374BD0EDCF887FBAC40FC /* WebReadRoutes.swift in Sources */,
 				D29DF9347B9147B81651DB38 /* WebRequestBoundary.swift in Sources */,
+				323E523296FCE2AEAB747A31 /* WebUILocalization.swift in Sources */,
 				6EF58A93206F71D06F2627FE /* WebUIRoutes.swift in Sources */,
 				17A8F7C7B36001337585A68D /* WebWriteRoutes.swift in Sources */,
 			);

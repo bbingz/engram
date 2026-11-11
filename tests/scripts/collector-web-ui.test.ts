@@ -16,7 +16,18 @@ const scriptMatch = source.match(
   /static let javascript = """\n([\s\S]*?)\n {8}"""/,
 )?.[1];
 if (!scriptMatch) throw new Error('Missing shipped Web viewer script');
-const script = scriptMatch;
+const localizationSource = readFileSync(
+  resolve(
+    import.meta.dirname,
+    '../../macos/EngramRemoteServer/Core/WebUILocalization.swift',
+  ),
+  'utf8',
+);
+const localization = localizationSource.match(
+  /static let javascript = """\n([\s\S]*?)\n {8}"""/,
+)?.[1];
+if (!localization) throw new Error('Missing shipped Web localization script');
+const script = `${localization}\n${scriptMatch}`;
 
 type Listener = (event: FakeEvent) => void;
 
@@ -288,7 +299,12 @@ function shipped(kind: 'html' | 'css' | 'javascript'): string {
 
 function harness(
   initialAuthCookie?: string,
-  options: { authMode?: string } = {},
+  options: {
+    authMode?: string;
+    locale?: string | null;
+    storageBlocked?: boolean;
+    confirm?: boolean;
+  } = {},
 ) {
   const nodes = new Map<string, Element>();
   const node = (id: string) => {
@@ -322,9 +338,30 @@ function harness(
   const timers = new Map<number, () => void>();
   let nextTimer = 1;
   activeElement = null;
+  const preferences = new Map<string, string>();
+  if (options.locale !== null)
+    preferences.set('engram.web.locale', options.locale ?? 'en');
+  let reloads = 0;
   const context = createContext({
     window: {
-      location: { hash: '', origin: 'https://viewer.example' },
+      localStorage: {
+        getItem(key: string) {
+          if (options.storageBlocked) throw new Error('blocked');
+          return preferences.get(key) ?? null;
+        },
+        setItem(key: string, value: string) {
+          if (options.storageBlocked) throw new Error('blocked');
+          preferences.set(key, value);
+        },
+      },
+      confirm: () => options.confirm !== false,
+      location: {
+        hash: '',
+        origin: 'https://viewer.example',
+        reload: () => {
+          reloads += 1;
+        },
+      },
       history: {
         pushState(_state: unknown, _title: string, href: string) {
           runInContext(`window.location.hash=${JSON.stringify(href)}`, context);
@@ -341,6 +378,8 @@ function harness(
       },
     },
     document: {
+      documentElement: node('document-root'),
+      querySelectorAll: () => [],
       getElementById: node,
       // Identity mode marks <body data-auth-mode>; credential mode has no body here.
       body: options.authMode
@@ -452,6 +491,8 @@ function harness(
   runInContext(script, context);
   return {
     node,
+    preferences,
+    reloads: () => reloads,
     requests,
     copied,
     auth: {
@@ -495,6 +536,217 @@ function harness(
     },
   };
 }
+
+describe('Web localization and shared shell', () => {
+  it('covers every explicit message key and preserves all interpolation slots', async () => {
+    const h = harness(undefined, { locale: null });
+    const catalog = (await h.call('uiMessages')) as unknown as Record<
+      string,
+      string
+    >;
+    const slots = (value: string) =>
+      [...value.matchAll(/[{]([^{}]+)[}]/g)].map((match) => match[1]).sort();
+    expect(Object.keys(catalog).length).toBeGreaterThan(800);
+    for (const [key, value] of Object.entries(catalog)) {
+      expect(value, key).not.toBe('');
+      expect(slots(value), key).toEqual(slots(key));
+    }
+    for (const match of scriptMatch.matchAll(/\bt\("([^"\n]+)"/g))
+      expect(Object.hasOwn(catalog, match[1]), match[1]).toBe(true);
+    for (const match of shipped('html').matchAll(
+      /data-i18n(?:-title|-placeholder|-aria-label)?="([^"]+)"/g,
+    )) {
+      const key = match[1]
+        .replaceAll('&amp;', '&')
+        .replaceAll('&#x27;', "'")
+        .replaceAll('&quot;', '"');
+      expect(Object.hasOwn(catalog, key), key).toBe(true);
+    }
+  });
+  it('defers language changes while any application write is pending', async () => {
+    for (const state of [
+      'settingsWriteBusy',
+      'aiConfigBusy',
+      'relationshipWritePending',
+      'insightSavePending',
+      'sessionActionPending',
+      'batchTitlePending',
+    ]) {
+      const h = harness(undefined, { locale: null });
+      await h.call(`${state} = true`);
+      h.node('ui-language').value = 'en';
+      h.node('ui-language').dispatch('change');
+      expect(h.reloads(), state).toBe(0);
+      expect(h.node('language-status').textContent).toBe(
+        '请等待当前操作完成后再切换语言。',
+      );
+    }
+  });
+  it('localizes typed telemetry, time, counts and status without changing its privacy or wire identity', async () => {
+    const h = harness(undefined, { locale: null });
+    await h.call('setSignedIn(true); activePage = "fleet"');
+    const now = Math.floor(Date.now() / 1000);
+    const load = h.call('loadFleet()');
+    h.requestFor('/web/api/fleet').resolve({
+      schemaVersion: 1,
+      generatedAt: now,
+      central: null,
+      machines: [
+        {
+          id: 'hq',
+          label: '<script>',
+          role: 'index',
+          status: 'ok',
+          observedAt: now,
+          lastAttemptAt: now,
+          processes: [{ name: 'Collector', state: 'running', pid: 42 }],
+          roots: [
+            {
+              source: 'cursor',
+              id: 'root',
+              locators: 2,
+              captured: 1,
+              dirty: 1,
+              cooling: 0,
+              unavailable: 0,
+              scanning: false,
+              scanLag: 0,
+              scanFailed: false,
+              epochStatus: 'match',
+            },
+          ],
+          replicas: [],
+          storage: [],
+          errors: [],
+        },
+      ],
+    });
+    await load;
+    const content = h.node('fleet-content').textContent;
+    for (const label of [
+      '已采样',
+      '运行中',
+      '采集缺口',
+      '存储',
+      '副本发布状态',
+      '待重新采集',
+    ])
+      expect(content).toContain(label);
+    expect(content).toContain('<script>'); // Supplied host label remains text, never translated or parsed.
+    expect(h.node('fleet-content').querySelector('script')).toBeNull();
+    await h.call('setStatus(t("signed in"))');
+    expect(h.node('status').dataset.tone).toBe('ok');
+    await h.call('setStatus(httpStatusText(503))');
+    expect(h.node('status').dataset.tone).toBe('danger');
+    await h.call('clearFleet()');
+    expect(h.node('fleet-content').textContent).toBe('');
+  });
+  it('defaults to Simplified Chinese and falls back safely for invalid or blocked preferences', async () => {
+    for (const options of [
+      { locale: null },
+      { locale: 'invalid' },
+      { storageBlocked: true },
+    ]) {
+      const h = harness(undefined, options);
+      expect(await h.call('uiLocale')).toBe('zh-CN');
+      expect(await h.call('t("Sessions")')).toBe('会话');
+      expect(await h.call('httpStatusText(403)')).toBe('无权访问 (403)');
+      expect(h.node('document-root').getAttribute('lang')).toBe('zh-CN');
+    }
+  });
+  it('uses English when explicitly selected without altering user text or protocol values', async () => {
+    const h = harness();
+    expect(await h.call('t("Sessions")')).toBe('Sessions');
+    await h.call('setText(detailNode, "Sessions <script> & 用户内容")');
+    expect(h.node('detail').textContent).toBe('Sessions <script> & 用户内容');
+    expect(h.node('detail').children).toHaveLength(0);
+    expect(await h.call('routeHref({page:"fleet"})')).toBe('#/fleet');
+  });
+  it('supports placeholders without recursively translating or interpreting values', async () => {
+    const h = harness(undefined, { locale: null });
+    expect(
+      await h.call('t("Signed in as {name}", {name:"Sessions <img> {name}"})'),
+    ).toBe('已登录：Sessions <img> {name}');
+    expect(await h.call('plural(2, "session")')).toBe('2 个会话');
+    expect(await h.call('plural(1, "session")')).toBe('1 个会话');
+    expect(await h.call('fleetCount(null)')).toBe('未上报');
+    expect(await h.call('httpStatusText(503)')).toBe('服务暂不可用 (503)');
+  });
+  it('persists only the language and reloads the same route after explicit confirmation', async () => {
+    const h = harness(undefined, { locale: null });
+    await h.call('window.location.hash = "#/detail?session=opaque"');
+    h.node('ui-language').value = 'en';
+    h.node('ui-language').dispatch('change');
+    expect(h.preferences.get('engram.web.locale')).toBe('en');
+    expect(h.preferences.size).toBe(1);
+    expect(h.reloads()).toBe(1);
+    expect(await h.call('window.location.hash')).toBe(
+      '#/detail?session=opaque',
+    );
+  });
+  it('does not lose drafts on cancellation or pretend a blocked storage write succeeded', () => {
+    for (const options of [
+      { locale: null, confirm: false },
+      { locale: null, storageBlocked: true },
+    ]) {
+      const h = harness(undefined, options);
+      h.node('insight-content-input').value = 'unsaved draft';
+      h.node('ui-language').value = 'en';
+      h.node('ui-language').dispatch('change');
+      expect(h.reloads()).toBe(0);
+      expect(h.node('ui-language').value).toBe('zh-CN');
+      expect(h.node('insight-content-input').value).toBe('unsaved draft');
+    }
+  });
+  it('offers bilingual commands without changing routes or translating loaded session titles', async () => {
+    const h = harness(undefined, { locale: null });
+    await h.call(
+      'setSignedIn(true); commandSessions = [{id:"opaque",label:"Settings"}]; openCommandPalette()',
+    );
+    h.node('command-query').value = '机器';
+    h.node('command-query').dispatch('input');
+    expect(await h.call('commandResults[0].value')).toBe('fleet');
+    h.node('command-query').value = 'machines';
+    h.node('command-query').dispatch('input');
+    expect(await h.call('commandResults[0].value')).toBe('fleet');
+    expect(
+      await h.call('availableCommands().find(x => x.kind === "session").label'),
+    ).toBe('Settings');
+  });
+  it('keeps the active mobile navigation item in view without moving the document', async () => {
+    const h = harness();
+    await h.call(
+      'const nav = document.getElementById("page-nav"); nav.clientWidth=300; nav.scrollWidth=900; nav.scrollLeft=0; const fleetLink=document.getElementById("nav-fleet"); fleetLink.offsetLeft=700; fleetLink.offsetWidth=100; window.scrollY=123; activatePage("fleet")',
+    );
+    expect(await h.call('document.getElementById("page-nav").scrollLeft')).toBe(
+      503,
+    );
+    expect(await h.call('window.scrollY')).toBe(123);
+    await h.call(
+      'const sessionsLink=document.getElementById("nav-sessions"); sessionsLink.offsetLeft=0; sessionsLink.offsetWidth=100; activatePage("sessions")',
+    );
+    expect(await h.call('document.getElementById("page-nav").scrollLeft')).toBe(
+      0,
+    );
+  });
+  it('uses one 1600px shell, a compact top-bar command entry and Chinese initial markup', () => {
+    expect(shipped('css')).toContain('--page-width:1600px');
+    expect(shipped('css')).toContain(
+      '.page-nav { position: relative; padding: 3px;',
+    );
+    expect(shipped('css')).toContain('max-width: var(--page-width)');
+    expect(shipped('css')).toContain(
+      '.page-nav { display: flex; flex-wrap: nowrap; overflow-x: auto;',
+    );
+    expect(shipped('css')).not.toContain(
+      '#workspace.data-page { max-width: 1200px; }',
+    );
+    expect(shipped('html')).toContain('<html lang="zh-CN">');
+    expect(shipped('html')).toContain('class="header-tools"');
+    expect(shipped('html')).toContain('id="ui-language"');
+    expect(shipped('html')).toContain('data-i18n="Sessions">会话<');
+  });
+});
 
 describe('fleet operations dashboard', () => {
   const sample = () => ({
@@ -3992,18 +4244,26 @@ describe('shipped collector Web viewer presentation', () => {
     expect(html).toContain('id="signed-out"');
     expect(html).toContain('id="lede"');
     expect(html).toMatch(
-      /<label[^>]*id="search-query"[^>]*>\s*<span class="visually-hidden">Search<\/span>/,
+      /<label[^>]*id="search-query"[^>]*>\s*<span class="visually-hidden" data-i18n="Search">搜索<\/span>/,
     );
     expect(html).toContain('id="source-picker"');
-    expect(html).toContain('id="source-summary">All sources');
+    expect(html).toContain(
+      'id="source-summary" data-i18n="All sources">所有来源',
+    );
     expect(html).toContain('id="project-picker"');
-    expect(html).toContain('id="project-summary">All projects');
+    expect(html).toContain(
+      'id="project-summary" data-i18n="All projects">所有项目',
+    );
     expect(html).toContain('for="project-query"');
-    expect(html).toMatch(/<label[^>]*>Credential/);
+    expect(html).toMatch(
+      /<label[^>]*><span data-i18n="Credential">凭据<\/span>/,
+    );
     expect(html).not.toMatch(/visually-hidden">Credential/);
     expect(html).not.toMatch(/visually-hidden">Machine ID/);
     expect(html).toMatch(/Advanced filters/);
-    expect(html).toMatch(/<label[^>]*>Machine ID/);
+    expect(html).toMatch(
+      /<label[^>]*><span data-i18n="Machine ID">机器 ID<\/span>/,
+    );
     expect(html).toContain('id="query"');
     expect(html).toContain('id="machineId"');
     expect(html).toContain('id="project-query"');
@@ -4023,7 +4283,7 @@ describe('shipped collector Web viewer presentation', () => {
     expect(css).toContain('--accent:#22c55e');
     expect(css).toContain('--panel:#1e293b');
     expect(css).toMatch(/color-scheme:\s*light dark/);
-    expect(css).toMatch(/#workspace\s*\{[^}]*max-width:\s*960px/);
+    expect(css).toMatch(/#workspace\s*\{[^}]*max-width:\s*var\(--page-width\)/);
     expect(css).toContain('#workspace:not(.showing-detail) .detail-pane');
     expect(css).not.toMatch(
       /#(?:workspace|library-page)[^{]*\{[^}]*grid-template-columns/,
@@ -6555,11 +6815,11 @@ describe('Dashboard and accessible analytics charts', () => {
     expect(ui.node('stats-rows').children).toHaveLength(2);
   });
 
-  it('exposes Dashboard hooks without changing the default Sessions landing or reading column', () => {
+  it('exposes Dashboard hooks and the same 1600px shell as the default Sessions landing', () => {
     expect(shipped('html')).toContain('id="nav-dashboard"');
     expect(shipped('html')).toContain('id="dashboard-page"');
-    expect(shipped('css')).toContain('#workspace.data-page');
-    expect(shipped('css')).toContain('max-width: 960px');
+    expect(shipped('css')).toContain('--page-width:1600px');
+    expect(shipped('css')).toContain('max-width: var(--page-width)');
   });
 });
 
@@ -8360,7 +8620,7 @@ it('does not remove the Search input from normal keyboard Tab order on page navi
   expect(ui.node('query').getAttribute('tabindex')).not.toBe('-1');
 });
 
-it('returns detail focus to its opener and keeps mobile nav fully visible by layout contract', async () => {
+it('returns detail focus to its opener and keeps mobile nav in its own scrollable row', async () => {
   const ui = harness();
   await ui.call('setSignedIn(true)');
   const opener = ui.node('session-opener');
@@ -8374,7 +8634,7 @@ it('returns detail focus to its opener and keeps mobile nav fully visible by lay
   await ui.call('showSessionList()');
   expect(ui.activeElement()).toBe(opener);
   expect(shipped('css')).toContain(
-    'grid-template-columns: repeat(3, minmax(0, 1fr))',
+    '.page-nav { display: flex; flex-wrap: nowrap; overflow-x: auto;',
   );
 });
 
