@@ -89,6 +89,16 @@ struct CollectorPublicationBudget: Sendable {
     var maxRecoveryCandidates: Int = 64
     var maxResponseBytes: Int = CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes
     var minimumFreeDiskBytes: Int64 = 16 * 1024 * 1024
+    /// Re-capture churn control (K6). A locator whose previous capture held at
+    /// least `recaptureCooldownMinimumBytes` raw bytes is not captured again
+    /// until `recaptureCooldownSeconds` after that capture. Every capture of a
+    /// large file stores new 8 MiB chunks in the spool, central CAS and both
+    /// replicas, so a hot whole-file rewrite (Cursor `store.db`) or a long
+    /// append-only transcript would otherwise be re-stored on every change.
+    /// The dirty revision is retained, so the latest generation is captured
+    /// once the window elapses; first captures are never delayed.
+    var recaptureCooldownSeconds: Int64 = 600
+    var recaptureCooldownMinimumBytes: Int64 = 8 * 1024 * 1024
 }
 
 public enum CollectorDiskAdmissionStatus: Equatable, Sendable {
@@ -228,7 +238,9 @@ actor CollectorPublicationWorker {
               (1...64).contains(budget.maxUploadClaimsPerReplica),
               (1...64).contains(budget.maxRecoveryCandidates),
               (1...CollectorPublicationProtocolLimits.maxAcceptanceRecordBytes).contains(budget.maxResponseBytes),
-              budget.minimumFreeDiskBytes >= 0 else { throw CollectorPublicationWorkerError.invalidBudget }
+              budget.minimumFreeDiskBytes >= 0,
+              (0...86_400).contains(budget.recaptureCooldownSeconds),
+              budget.recaptureCooldownMinimumBytes >= 0 else { throw CollectorPublicationWorkerError.invalidBudget }
         guard try catalog.machineID() == owner.machineIdentity() else {
             throw CollectorPublicationWorkerError.invalidConfiguration
         }
@@ -472,7 +484,7 @@ actor CollectorPublicationWorker {
             if reservations.contains(where: { $0.rootID.utf8.elementsEqual(root.rootID.utf8) && $0.rootRevision == root.revision }) { continue }
             if let pendingDirtyRootIDs, !pendingDirtyRootIDs.contains(Data(root.rootID.utf8)) { continue }
             let claimLimit = root.source == .opencode || root.cursorLegacy ? min(1, remainingFiles) : remainingFiles
-            let claims: [CollectorDirtyClaim]
+            var claims: [CollectorDirtyClaim]
             do {
                 claims = try owner.claimDirty(configuration: root, limit: claimLimit, now: now)
             } catch CollectorPOSIXEnumerationError.io(.openComponent, ENOENT) {
@@ -483,6 +495,20 @@ actor CollectorPublicationWorker {
             } catch CollectorPOSIXEnumerationError.rootIdentityChanged {
                 result.deferred += 1
                 continue
+            }
+            // OpenCode and Cursor legacy walks capture per database session and
+            // keep their own pacing; every other source honors the K6 window.
+            if root.source != .opencode && !root.cursorLegacy {
+                var due: [CollectorDirtyClaim] = []
+                for claim in claims {
+                    if let until = try recaptureCooldownUntil(claim, now: now) {
+                        _ = try owner.deferClaim(claim, configuration: root, retryNotBefore: until, reason: .recaptureCooldown)
+                        result.deferred += 1
+                    } else {
+                        due.append(claim)
+                    }
+                }
+                claims = due
             }
             var handled = Set<String>()
             for claim in claims {
@@ -682,6 +708,31 @@ actor CollectorPublicationWorker {
         status = .observed(minimumFreeDiskBytes: budget.minimumFreeDiskBytes,
             inventoryMinimumAvailableBytes: inventoryMinimum, captureMinimumAvailableBytes: captureMinimum)
         return capture >= budget.minimumFreeDiskBytes
+    }
+
+    /// The time a re-capture of this claim becomes due, or nil when it may be
+    /// captured now. Fails open (nil) on any unreadable or implausible prior
+    /// capture so churn control can never strand dirty work; a clock that moved
+    /// backwards past the prior capture also captures immediately.
+    private func recaptureCooldownUntil(_ claim: CollectorDirtyClaim, now: Int64) throws -> Int64? {
+        try Task.checkCancellation()
+        guard budget.recaptureCooldownSeconds > 0, let captureID = claim.lastCaptureID,
+              let previous = try? catalog.capture(captureID: captureID),
+              previous.rawByteCount >= budget.recaptureCooldownMinimumBytes,
+              let capturedAt = Self.captureTimestamp(previous.capturedAt) else { return nil }
+        guard now >= capturedAt else { return nil }
+        let due = capturedAt.addingReportingOverflow(budget.recaptureCooldownSeconds)
+        guard !due.overflow, now < due.partialValue else { return nil }
+        return due.partialValue
+    }
+
+    private static func captureTimestamp(_ value: String) -> Int64? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: value) else { return nil }
+        let seconds = date.timeIntervalSince1970
+        guard seconds.isFinite, seconds >= 0, seconds < 253_402_300_800 else { return nil }
+        return Int64(seconds.rounded(.down))
     }
 
     private func configuration(rootID: String, revision: Int64) -> CollectorRootConfiguration? {

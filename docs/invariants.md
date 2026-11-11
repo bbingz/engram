@@ -260,6 +260,13 @@ Invariants are properties that must survive every change; each entry names where
 - **Verified by** - `macos/EngramServiceCoreTests/CollectorPublicationWorkerTests.swift` (testNeverCapturedMissingSourceLeavesDirtySetAndRearmsOnReobservation_repro, testPreviouslyCapturedMissingSourceDefersOneSecondAndStaysUnacknowledged_repro, testMixedCapturedAndNeverCapturedMissingCodexShareOneBatchAndDeadlines_repro).
 - **Gate** - `none`.
 
+## Collector Re-Capture Of Large Locators Is Rate-Limited
+
+- **Statement** - A dirty locator whose previous capture held at least the re-capture minimum (8 MiB by default) is not captured again until the re-capture window (600 s by default) after that capture. Its claim is deferred to the window end with reason `recaptureCooldown`, and its dirty revision is kept, so the latest generation is captured once the window elapses. First captures, smaller locators, OpenCode and Cursor legacy walks are not delayed, and an unreadable prior capture or a clock earlier than it never delays capture.
+- **Enforced by** - `macos/EngramCollectorCore/CollectorPublicationWorker.swift` (recaptureCooldownUntil).
+- **Verified by** - `macos/EngramCollectorCoreTests/CollectorRecaptureCooldownTests.swift`.
+- **Gate** - `none`.
+
 ## Unverified Anchors
 
 None.
