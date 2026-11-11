@@ -36,7 +36,7 @@ final class WebUIRoutesTests: XCTestCase {
                          "stats-view-costs", "costs-content", "costs-form", "costs-totals", "costs-rows", "costs-sessions", "costs-more"] {
                 XCTAssertTrue(html.contains(hook), "\(path) missing \(hook)")
             }
-            XCTAssertTrue(html.contains(">Search<") || html.contains(">Search "), path)
+            XCTAssertTrue(html.contains("data-i18n=\"Search\">搜索<"), path)
             XCTAssertTrue(html.contains("id=\"source-options\""), path)
             XCTAssertTrue(html.contains("All sources"), path)
             XCTAssertTrue(html.contains("Machine ID"), path)
@@ -45,6 +45,24 @@ final class WebUIRoutesTests: XCTestCase {
             XCTAssertFalse(html.localizedCaseInsensitiveContains("replica"), path)
             XCTAssertFalse(html.localizedCaseInsensitiveContains("publication"), path)
         }
+    }
+
+    func testLocalizationShipsBeforeApplicationWithChineseDefaultAndSharedShell() async throws {
+        let harness = try UIHarness(configuration: configuration())
+        let html = try await bodyText(try await harness.respond(request(path: "/web", headers: [("Host", "viewer.example")])))
+        let js = try await bodyText(try await harness.respond(request(path: "/web/app.js", headers: [("Host", "viewer.example")])))
+        let css = try await bodyText(try await harness.respond(request(path: "/web/app.css", headers: [("Host", "viewer.example")])))
+        XCTAssertTrue(html.contains("<html lang=\"zh-CN\">"))
+        XCTAssertTrue(html.contains("data-i18n=\"Sessions\">会话<"))
+        XCTAssertTrue(html.contains("id=\"ui-language\""))
+        XCTAssertTrue(html.contains("class=\"header-tools\""))
+        XCTAssertEqual(js, WebUILocalization.javascript + "\n" + WebUIRoutes.javascript)
+        XCTAssertTrue(js.contains("engram.web.locale"))
+        XCTAssertTrue(js.contains("function changeUILanguage("))
+        XCTAssertTrue(css.contains("--page-width:1600px"))
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
+        XCTAssertFalse(css.contains("#workspace.data-page { max-width: 1200px; }"))
+        XCTAssertFalse(containsInlineScript(html))
     }
 
     func testSameOriginJavaScriptAndCSSAreServedSeparately() async throws {
@@ -89,7 +107,9 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(css.contains("@media (prefers-color-scheme: light)"))
         XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
         XCTAssertTrue(css.contains("var(--mono)"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        // Includes the bundled Simplified Chinese catalog; no runtime library or network translations.
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
+        XCTAssertLessThanOrEqual(WebUILocalization.javascript.utf8.count, 100_000)
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
@@ -123,9 +143,9 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(js.contains("overviewStreams === null"))
         XCTAssertTrue(js.contains("version !== dashboardVersion"))
         XCTAssertTrue(js.contains("Table · chart values"))
-        XCTAssertTrue(css.contains("#workspace.data-page"))
+        XCTAssertTrue(css.contains("--page-width:1600px"))
         XCTAssertTrue(css.contains("--c1:"))
-        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
     }
 
     func testTranscriptReadingAssetsKeepSafeOrdinalAndLazyInfoContracts() async throws {
@@ -145,8 +165,8 @@ final class WebUIRoutesTests: XCTestCase {
             XCTAssertTrue(js.contains(contract), contract)
         }
         XCTAssertTrue(css.contains("#detail-header { position: sticky"))
-        XCTAssertTrue(css.contains("max-width: 960px"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
@@ -169,7 +189,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertFalse(js.contains("NodeFilter"))
         XCTAssertTrue(js.contains("routeFilterKeys"))
         XCTAssertTrue(js.contains("workspaceNode.hidden) return; // Leave the pending URL"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
     }
 
     func testPolishKeepsAccessibleDialogsScopeProvenanceAndSignedOutCopy() async throws {
@@ -190,8 +210,8 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(css.contains(".sign-in-card"))
         XCTAssertTrue(css.contains("input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }"))
         XCTAssertTrue(css.contains("@media (prefers-reduced-motion: reduce)"))
-        XCTAssertTrue(css.contains("max-width: 960px"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
@@ -209,9 +229,9 @@ final class WebUIRoutesTests: XCTestCase {
         }
         XCTAssertTrue(css.contains(".syntax-keyword"))
         XCTAssertTrue(css.contains("#transcript-minimap"))
-        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
         XCTAssertFalse(js.contains("innerHTML"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
@@ -235,9 +255,9 @@ final class WebUIRoutesTests: XCTestCase {
         }
         XCTAssertTrue(css.contains("#command-dialog"))
         XCTAssertTrue(css.contains(".command-option[aria-selected=\"true\"]"))
-        XCTAssertTrue(css.contains("max-width: 960px"))
+        XCTAssertTrue(css.contains("max-width: var(--page-width)"))
         XCTAssertFalse(js.contains("innerHTML"))
-        XCTAssertLessThanOrEqual(js.utf8.count, 360_000)
+        XCTAssertLessThanOrEqual(js.utf8.count, 400_000)
         XCTAssertLessThanOrEqual(css.utf8.count, 80_000)
     }
 
@@ -370,7 +390,7 @@ final class WebUIRoutesTests: XCTestCase {
         XCTAssertTrue(js.contains("if (response.status === 401) { await identitySignIn(false); return; }"))
         XCTAssertTrue(js.contains("identityMode && Date.now() - identitySignInAt > 5000"))
         XCTAssertTrue(js.contains("Your tailnet login is not permitted for this Web origin."))
-        XCTAssertTrue(js.contains("\"Signed in as \" + access.login"))
+        XCTAssertTrue(js.contains("t(\"Signed in as {0}\", [access.login])"))
         XCTAssertTrue(js.contains("hidden = signedIn || identityMode"))
         XCTAssertTrue(js.contains("hidden = !signedIn || identityMode"))
     }
