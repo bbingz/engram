@@ -74,3 +74,33 @@ pinned XcodeGen, never hand-edit the generated project.
 This document describes the implementation, not proof of deployment. The dated
 `CHANGELOG.md` entry records validation and rollout status. HQ deployment must still
 respect the compatible-line rule while the migration prerequisite is unresolved.
+
+## HQ rollout — 2026-11-11
+
+- PR #515 merged as `d8b7b17f` after 15 successful CI checks and two conditional
+  skips (the first CodeQL run flagged double unescaping in a test helper; fixed
+  with a single-pass decoder and regression). HQ uses compatible deploy commit
+  `909aef7b` (descendant of `081426da`), not a main build. It also localizes the
+  deployed AI endpoint-conflict (409) guard that exists only on that line.
+- Compatible gates: RemoteServerCore 551/551, UI/exporter 407/407, typecheck,
+  project drift, Release arm64 packaging and strict/deep signatures. Package
+  `remote-server-web-i18n-909aef7b-20261111`, SHA-256
+  `3e3c0c7c0722bfa9cfe34c64b50529225910b11333cfb1aa6efce5fe6cee674d`.
+- Receiver-only cutover: PID 58762 → 66658, health `ok`, served JS equals the
+  compatible source. Only the receiver executable argument changed. Sampler job and
+  config fingerprints unchanged; its next automatic publication reported five
+  reachable hosts and the new receiver PID/revision. Seven other sampled
+  collector/index/archive processes kept their PIDs and revisions.
+- Live checks: editor/anonymous/origin/query/method/no-store/privacy gates, assets,
+  sessions/filter/search/default Overview/Insights. Four real browser cases
+  (Chinese dark, English light; 1440 and 390 wide) passed shared shell width,
+  locale, Machines tables/keyboard/contained scrolling, bilingual Cmd+K, refresh,
+  drilldown, reload, navigation privacy clearing and identity-mode logout.
+- Health/Overview remains unavailable at the paginated Overview read: a read-only
+  probe returned 503 at page 19 (`limit=2`) in three of three runs, matching the
+  pre-existing failure first recorded at the initial fleet rollout. This rollout
+  changed no read route, index or service; root cause remains unverified.
+- **Rollback (UI only):** restore the private
+  `hq/state/web-fleet/web-i18n-909aef7b-20261111/receiver-before.plist` and restart
+  only the receiver onto retained `081426da`. Leave the sampler loaded; no database
+  rollback is needed. Safari/physical-device testing was not run.
