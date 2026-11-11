@@ -84,16 +84,16 @@ public enum CollectorSpoolGCPreview {
         guard floor.isSubset(of: keep), keep.isSubset(of: graph) else { throw Failure.keepSetFloorViolation }
     }
 
-    private struct Capture {
+    struct Capture {
         let manifest: ArchiveSourceManifest
         let digest: String
         let status: String
     }
-    private struct Catalog {
+    struct Catalog {
         let captures: [String: Capture]
         let fingerprint: String
     }
-    private struct Publication {
+    struct Publication {
         let captureID: String
         let digest: String
         let root: String
@@ -101,7 +101,7 @@ public enum CollectorSpoolGCPreview {
         let path: String
         let envelope: CollectorPublicationEnvelope
     }
-    private struct Inventory {
+    struct Inventory {
         let machine: String
         let publications: [String: Publication]
         let replicas: [String: [Row]]
@@ -110,12 +110,12 @@ public enum CollectorSpoolGCPreview {
         let reservedRoots: Set<String>
         let fingerprint: String
     }
-    private struct LocatorKey: Hashable {
+    struct LocatorKey: Hashable {
         let root: String
         let revision: Int64
         let path: String
     }
-    private struct CentralRow: Decodable {
+    struct CentralRow: Codable {
         let publicationSHA256: String
         let manifestSHA256: String
         let machineID: String
@@ -126,7 +126,7 @@ public enum CollectorSpoolGCPreview {
         let failureCode: String?
         let hasRetainedGeneration: Bool
     }
-    private struct Evidence: Decodable {
+    struct Evidence: Codable {
         let schemaVersion: Int
         let generatedAt: String
         let parserRevision: String
@@ -147,14 +147,14 @@ public enum CollectorSpoolGCPreview {
         }
     }
 
-    private static func value<T: DatabaseValueConvertible>(_ row: Row, _ column: String, as type: T.Type = T.self) throws -> T {
+    static func value<T: DatabaseValueConvertible>(_ row: Row, _ column: String, as type: T.Type = T.self) throws -> T {
         guard row.hasColumn(column) else { throw Failure.unsupportedSchema }
         let raw: DatabaseValue = row[column]
         guard let result = T.fromDatabaseValue(raw) else { throw Failure.invalidInput }
         return result
     }
 
-    private static func rows(_ db: Database, _ table: String, order: String) throws -> [Row] {
+    static func rows(_ db: Database, _ table: String, order: String) throws -> [Row] {
         // All names are static literals supplied below, never CLI input.
         guard let count = try Int.fetchOne(db, sql: "SELECT count(*) FROM \(table)"), count <= maximumRows else { throw Failure.resourceLimit }
         let lengths = try db.columns(in: table).map { column in
@@ -167,7 +167,7 @@ public enum CollectorSpoolGCPreview {
         return values
     }
 
-    private static func fingerprint(_ groups: [[Row]]) throws -> String {
+    static func fingerprint(_ groups: [[Row]]) throws -> String {
         var data = Data()
         for group in groups {
             data.append(Data("\(group.count):".utf8))
@@ -190,7 +190,10 @@ public enum CollectorSpoolGCPreview {
     }
 
     private static func readInventory(_ url: URL) throws -> Inventory {
-        try CollectorMachineIdentityReader.withReadOnlyDatabase(from: url) { db in
+        try CollectorMachineIdentityReader.withReadOnlyDatabase(from: url) { try readInventory($0) }
+    }
+
+    static func readInventory(_ db: Database) throws -> Inventory {
             let metadata = try rows(db, "collector_metadata", order: "key")
             let values = try Dictionary(uniqueKeysWithValues: metadata.map { (try value($0, "key", as: String.self), try value($0, "value", as: String.self)) })
             guard values["schema_version"] == "2", values["publication_schema_version"] == "11",
@@ -222,16 +225,18 @@ public enum CollectorSpoolGCPreview {
             for row in roots { rootMap[try value(row, "root_id")] = row }
             return Inventory(machine: machine, publications: publications, replicas: replicaMap, locators: locatorMap, roots: rootMap,
                 reservedRoots: Set(try reservations.map { try value($0, "root_id", as: String.self) }),
-                fingerprint: try fingerprint([metadata, roots, locators, pubs, replicas, reservations]))
-        }
+                fingerprint: try fingerprint([metadata.filter { ($0["key"] as String) != "active_owner_run_id" && ($0["key"] as String) != "gc_schema_version" }, roots, locators, pubs, replicas, reservations]))
     }
 
     private static func readCatalog(_ url: URL, machine: String) throws -> Catalog {
-        try CollectorMachineIdentityReader.withReadOnlyDatabase(from: url) { db in
+        try CollectorMachineIdentityReader.withReadOnlyDatabase(from: url) { try readCatalog($0, machine: machine) }
+    }
+
+    static func readCatalog(_ db: Database, machine: String, allowEmpty: Bool = false) throws -> Catalog {
             guard try String.fetchOne(db, sql: "SELECT value FROM archive_metadata WHERE key='machine_id'") == machine,
                   try String.fetchOne(db, sql: "SELECT value FROM archive_metadata WHERE key='schema_version'") == "5" else { throw Failure.unsupportedSchema }
             let raw = try rows(db, "archive_captures", order: "capture_id")
-            guard !raw.isEmpty else { throw Failure.emptyGraph }
+            guard allowEmpty || !raw.isEmpty else { throw Failure.emptyGraph }
             var captures: [String: Capture] = [:], totalBytes = 0, references = 0
             for row in raw {
                 let bytes: Data = try value(row, "unbound_manifest_bytes")
@@ -258,10 +263,9 @@ public enum CollectorSpoolGCPreview {
                 captures[manifest.captureID] = Capture(manifest: manifest, digest: digest, status: try value(row, "status"))
             }
             return Catalog(captures: captures, fingerprint: try fingerprint([raw]))
-        }
     }
 
-    private static func publicationBlock(_ p: Publication, _ inventory: Inventory) throws -> String? {
+    static func publicationBlock(_ p: Publication, _ inventory: Inventory) throws -> String? {
         let replicas = inventory.replicas[p.digest] ?? []
         var reasons = Set<String>()
         if try replicas.count != 2 || Set( replicas.map { try value($0, "replica_id", as: String.self) }) != ["hq", "m1"] { reasons.insert("not_dual_acked") }
@@ -284,15 +288,23 @@ public enum CollectorSpoolGCPreview {
         return gateOrder.first { reasons.contains($0) }
     }
 
-    private static func evaluate(_ inventory: Inventory, _ catalog: Catalog, spoolRoot: URL,
-                                 evidence: Evidence?, maxBytes: Int64, maxObjects: Int) throws -> Report {
+    struct Graph {
+        let refs: [String: Set<String>]
+        let sizes: [String: Int64]
+        let keep: Set<String>
+        let admissionKeep: Set<String>
+        let captureReasons: [String: String]
+        let dualACKedCaptures: Set<String>
+    }
+
+    static func graph(_ inventory: Inventory, _ catalog: Catalog, evidence: Evidence?) throws -> Graph {
         let publications = Dictionary(grouping: inventory.publications.values, by: \.captureID)
         guard Set(publications.keys).isSubset(of: Set(catalog.captures.keys)) else { throw Failure.incompleteGraph }
         let latest = Set(try inventory.locators.values.compactMap { try value($0, "last_capture_id", as: String?.self) })
         guard latest.isSubset(of: Set(catalog.captures.keys)) else { throw Failure.incompleteGraph }
         let central = Dictionary(uniqueKeysWithValues: (evidence?.publications ?? []).map { ($0.publicationSHA256, $0) })
         var refs: [String: Set<String>] = [:], sizes: [String: Int64] = [:], captureReasons: [String: String] = [:]
-        var floor = Set<String>(), keep = Set<String>(), dualACKedCaptures = Set<String>()
+        var floor = Set<String>(), keep = Set<String>(), dualACKedCaptures = Set<String>(), admissionKeep = Set<String>()
         for (id, capture) in catalog.captures {
             let digests = Set(capture.manifest.chunks.map(\.rawSHA256))
             for chunk in capture.manifest.chunks {
@@ -336,11 +348,23 @@ public enum CollectorSpoolGCPreview {
                 else if row.status == "quarantined", row.failureCode == "quarantine.cross_machine_duplicate" { reasons.insert("duplicate_unprovable") }
                 else if row.status != "index_ready" || !row.hasRetainedGeneration || !(row.failureCode ?? "").isEmpty { reasons.insert("central_other") }
             }
+            if latest.contains(id) || !dualACKedCaptures.contains(id) || capture.status != "captured" {
+                admissionKeep.formUnion(digests)
+            }
             if let reason = gateOrder.first(where: { reasons.contains($0) }) {
                 captureReasons[id] = reason; keep.formUnion(digests)
             }
         }
         try validateKeepSet(graph: Set(refs.keys), keep: keep, floor: floor)
+        return Graph(refs: refs, sizes: sizes, keep: keep, admissionKeep: admissionKeep,
+            captureReasons: captureReasons, dualACKedCaptures: dualACKedCaptures)
+    }
+
+    private static func evaluate(_ inventory: Inventory, _ catalog: Catalog, spoolRoot: URL,
+                                 evidence: Evidence?, maxBytes: Int64, maxObjects: Int) throws -> Report {
+        let graph = try graph(inventory, catalog, evidence: evidence)
+        let refs = graph.refs, sizes = graph.sizes, keep = graph.keep
+        let captureReasons = graph.captureReasons, dualACKedCaptures = graph.dualACKedCaptures
         var buckets = Dictionary(uniqueKeysWithValues: gateOrder.map { ($0, Bucket(reason: $0)) })
         var sharedCauses = Dictionary(uniqueKeysWithValues: gateOrder.map { ($0, Bucket(reason: $0)) })
         var present: Int64 = 0, missing: Int64 = 0, potential: Int64 = 0, budgeted: Int64 = 0, count = 0

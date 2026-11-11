@@ -53,7 +53,7 @@ final class CollectorPrivacyProofTests: XCTestCase {
             XCTAssertEqual(try assess(fixture, format: .windsurfHookTranscript, policy: policy, limits: limits), .withheld(.limitsExceeded))
         }
         let chunk = try XCTUnwrap(fixture.result.manifest.chunks.first)
-        _ = try fixture.cas.removeObject(sha256: chunk.rawSHA256)
+        try fixture.removeObject(sha256: chunk.rawSHA256)
         XCTAssertEqual(try assess(fixture, format: .windsurfHookTranscript, policy: policy), .withheld(.invalidCapture))
     }
 
@@ -158,7 +158,7 @@ final class CollectorPrivacyProofTests: XCTestCase {
             XCTAssertEqual(try assess(fixture, format: .antigravityCLITranscript, policy: policy, limits: limits), .withheld(.limitsExceeded))
         }
         let chunk = try XCTUnwrap(fixture.result.manifest.chunks.first)
-        _ = try fixture.cas.removeObject(sha256: chunk.rawSHA256)
+        try fixture.removeObject(sha256: chunk.rawSHA256)
         XCTAssertEqual(try assess(fixture, format: .antigravityCLITranscript, policy: policy), .withheld(.invalidCapture))
     }
 
@@ -320,7 +320,7 @@ final class CollectorPrivacyProofTests: XCTestCase {
         let policy = try CollectorPrivacyPolicy(revision: 1, excludedProjectRoots: [], allowedSources: [.cursor])
         let fixture = try captureLegacy(cwd: "/allowed/project")
         let chunk = try XCTUnwrap(fixture.result.manifest.chunks.first)
-        _ = try fixture.cas.removeObject(sha256: chunk.rawSHA256)
+        try fixture.removeObject(sha256: chunk.rawSHA256)
         XCTAssertEqual(try assess(fixture, format: .cursor, policy: policy), .withheld(.invalidCapture))
         let target = root.appendingPathComponent("real-project")
         let alias = root.appendingPathComponent("project-alias")
@@ -1441,7 +1441,7 @@ final class CollectorPrivacyProofTests: XCTestCase {
             XCTAssertEqual(try assess(fixture, format: .vscode, policy: allowed), .withheld(expected))
         }
         let fixture = try captureVSCode(roots: ["/allowed"])
-        _ = try fixture.cas.removeObject(sha256: XCTUnwrap(fixture.result.manifest.chunks.first).rawSHA256)
+        try fixture.removeObject(sha256: XCTUnwrap(fixture.result.manifest.chunks.first).rawSHA256)
         XCTAssertEqual(try assess(fixture, format: .vscode, policy: allowed), .withheld(.invalidCapture))
     }
 
@@ -1516,7 +1516,7 @@ final class CollectorPrivacyProofTests: XCTestCase {
             XCTAssertEqual(try assess(fixture, format: .cline, policy: allowed, limits: limits), .withheld(.limitsExceeded))
         }
         let chunk = try XCTUnwrap(fixture.result.manifest.chunks.first)
-        _ = try fixture.cas.removeObject(sha256: chunk.rawSHA256)
+        try fixture.removeObject(sha256: chunk.rawSHA256)
         XCTAssertEqual(try assess(fixture, format: .cline, policy: allowed), .withheld(.invalidCapture))
     }
 
@@ -1555,6 +1555,10 @@ final class CollectorPrivacyProofTests: XCTestCase {
         let storeRoot: URL
         let cas: ImmutableArchiveCAS
         let result: ArchiveCaptureResult
+
+        func removeObject(sha256: String) throws {
+            try FileManager.default.removeItem(at: storeRoot.appendingPathComponent("objects/sha256/\(sha256.prefix(2))/\(sha256)"))
+        }
     }
 
     private func capture(_ bytes: Data, source: SourceName, directory: String? = nil) throws -> Fixture {

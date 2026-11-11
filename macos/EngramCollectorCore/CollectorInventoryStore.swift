@@ -49,6 +49,7 @@ final class CollectorInventoryStore {
                         throw CollectorInventoryError.invalidState
                     }
                     try Self.createPublicationSchema(db)
+                    try CollectorSpoolGCJournal.migrate(db)
                     try Self.migrateGeminiContextColumns(db)
                     try Self.migrateGeminiRegistryObserverColumns(db)
                     try Self.migrateOpenCodeWalkColumns(db)

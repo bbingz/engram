@@ -273,7 +273,7 @@ final class CollectorSpoolGCPreviewTests: XCTestCase {
     }
 }
 
-private final class GCPreviewFixture {
+final class GCPreviewFixture {
     static let machine = "11111111-2222-3333-4444-555555555555"
     static let instance = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
     static let epoch = "11111111-AAAA-BBBB-CCCC-555555555555"
@@ -284,8 +284,11 @@ private final class GCPreviewFixture {
     private var central: [[String: Any]] = []
     private var sequence: Int64 = 0
 
-    init() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("k5-preview-\(UUID().uuidString)").resolvingSymlinksInPath()
+    let nativeRoot: String
+
+    init(directory: URL? = nil, nativeRoot: String = "/synthetic") throws {
+        self.nativeRoot = nativeRoot
+        root = directory ?? FileManager.default.temporaryDirectory.appendingPathComponent("k5-preview-\(UUID().uuidString)").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let capture = root.appendingPathComponent("capture")
         catalog = try ArchiveCatalog(root: capture, machineID: Self.machine)
@@ -294,18 +297,18 @@ private final class GCPreviewFixture {
         var config = Configuration(); config.foreignKeysEnabled = false
         inventory = try DatabaseQueue(path: root.appendingPathComponent("inventory/inventory.sqlite").path, configuration: config)
         let store = try CollectorInventoryStore(database: inventory!, machineID: Self.machine, ownerRunID: "fixture")
-        try store.registerRoot(.init(rootID: "root", source: .codex, rootPath: "/synthetic", revision: 1))
+        try store.registerRoot(.init(rootID: "root", source: .codex, rootPath: nativeRoot, revision: 1))
         try inventory!.write { try $0.execute(sql: "UPDATE collector_roots SET completed_revision=requested_revision") }
     }
 
     func add(_ name: String, bytes text: String, latest: Bool = false, published: Bool = true,
              revision: Int = 1, state: String = "acknowledged", error: String = "", dirty: Bool = false,
-             centralStatus: String = "index_ready", centralFailure: String = "") throws {
+             centralStatus: String = "index_ready", centralFailure: String = "", nativeGeneration: ArchiveSourceGeneration? = nil) throws {
         sequence += 1
         let bytes = Data(text.utf8), digest = ArchiveV2Hash.sha256(bytes)
         let id = ArchiveV2Hash.sha256(Data(name.utf8))
-        let generation = try ArchiveSourceGeneration(device: 1, inode: sequence, size: Int64(bytes.count), mtimeNs: sequence, ctimeNs: sequence, mode: 0o100600)
-        let manifest = try ArchiveSourceManifest(captureID: id, machineID: Self.machine, source: "codex", locator: "/synthetic/stream", sessionID: nil,
+        let generation = try nativeGeneration ?? ArchiveSourceGeneration(device: 1, inode: sequence, size: Int64(bytes.count), mtimeNs: sequence, ctimeNs: sequence, mode: 0o100600)
+        let manifest = try ArchiveSourceManifest(captureID: id, machineID: Self.machine, source: "codex", locator: nativeRoot + "/stream", sessionID: nil,
             capturedAt: "2026-11-11T00:00:00.000Z", generation: generation, wholeSourceSHA256: digest, rawByteCount: Int64(bytes.count),
             chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: digest, rawByteCount: Int64(bytes.count))],
             replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["source.jsonl"]))

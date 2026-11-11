@@ -168,6 +168,8 @@ public actor CollectorRuntime {
             // borrowed identity catalog and shadow marker retain strict readers.
             let catalog = try openExistingCapture(configuration, machineID: owner.machineIdentity())
             do {
+                let spool = try CollectorSpoolGCSession(owner: owner, catalog: catalog, spoolRoot: configuration.shadowURL)
+                _ = try spool.recover(now: Int64(Date().timeIntervalSince1970))
                 let replicas = try configuration.replicas.map { reference -> CollectorReplicaEndpoint in
                     try Task.checkCancellation()
                     let secret = try secretLoader(reference.credentialID)
@@ -177,7 +179,7 @@ public actor CollectorRuntime {
                     return .init(replicaID: reference.serverID, baseURL: URL(string: reference.baseURL)!, bearerToken: secret)
                 }
                 guard replicas[0].bearerToken != replicas[1].bearerToken else { throw CollectorRuntimeError.invalidCredential }
-                let cas = try ImmutableArchiveCAS(root: configuration.captureURL)
+                let cas = try ImmutableArchiveCAS(root: configuration.captureURL).withCollectorObjectAccess(spool)
                 let worker = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
                     configuration: configuration, replicas: replicas, settingsURL: settingsURL)
                 let uploader = try makePublicationWorker(owner: owner, catalog: catalog, cas: cas,
@@ -632,7 +634,7 @@ public actor CollectorRuntime {
         if let streamFailure { throw streamFailure }
     }
 
-    private static func openExistingCapture(_ configuration: CollectorRuntimeConfiguration, machineID: String) throws -> ArchiveCatalog {
+    static func openExistingCapture(_ configuration: CollectorRuntimeConfiguration, machineID: String) throws -> ArchiveCatalog {
         let root = configuration.captureURL
         let path = root.appendingPathComponent("archive.sqlite")
         let components = try CollectorPOSIXDirectoryAccess.components(root.path)
@@ -780,7 +782,7 @@ public actor CollectorRuntime {
     }
 }
 
-private struct CollectorRuntimeConfiguration {
+struct CollectorRuntimeConfiguration {
     struct Root: Decodable {
         let rootID: String
         let source: String

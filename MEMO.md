@@ -4,6 +4,13 @@
 
 ### 2026-11-11
 
+- [修复] K5 B2 首轮 R1/R2/T1/T2/F1 已修：原生路径不可读时恢复隔离；删除门禁按函数锁定；从未 GC 的启动不扫图；未管理缺失只降级对应发布；SQLite walk 透传 GC 错误。F2 已列 MBP 解除阻塞选项，未实现副本恢复，详见 `CHANGELOG.md`。
+- [验证] 最终 CollectorCore 756/756（GC 50/50，含 Release CLI）、运行时/发布 220/220、门禁 80/80，Release/漂移/Biome/diff 通过；B2 未提交，待 t11 第二轮，报告 `/tmp/engram-k5-phaseB2-r2.md`；生产/token/试点仍未授权。
+
+- [新增] K5 B2 隔离实现已完成：journal/residency、隔离/恢复/最终删除 CLI、启动与读取准入、证据/预算/原生 epoch 门槛和递归删除安全门禁；B1 已提交 `2fcd90fe`，B2 未提交，交 t11 独立评审。详见 `CHANGELOG.md` 与 `/tmp/engram-k5-phaseB2.md`。
+- [验证] 最终 CollectorCore 753/753（含 Release CLI）、运行时/发布 218/218、安全门禁 70/70；Release、Biome、生成漂移与删除 API 符号检查通过。B1 额外 CLI 仍有 10 项既有契约失败。
+- [未验证] 未碰生产/token/真实锁或重启；投影原生映射保守拒绝，部分已删除的多块捕获可能需显式恢复后再验隐私；真实证据/escrow、断电与生产规模仍待验证。保留 M2 首试、MBP 第二，试点另行授权。
+
 - [修复] K5 B1 独立评审两项已修：`/private` 路径解析、全引用双 ACK 的既有缺失字节单列；非双 ACK 缺失仍拒绝。Swift 31/31；额外 CLI suite 42 通过/10 既有错误文本契约失败，详见 `CHANGELOG.md`。B2 仅获隔离代码/测试授权，生产/token/pilot 仍禁止。
 
 - [变更] K5 B1 只读预览已本地实现：完整 unbound 引用图、保守 keep-set、唯一字节阻塞分类与中央 exporter；`actionableBytes=0`，K9/escrow 未完成，B2 执行器仍未获授权。详见 `CHANGELOG.md` 与 `/tmp/engram-k5-phaseB1.md`。

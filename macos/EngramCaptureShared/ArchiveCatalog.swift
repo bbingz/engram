@@ -1576,6 +1576,12 @@ public final class ArchiveCatalog: @unchecked Sendable {
         }
     }
 
+    // Borrow the existing pool's read transaction for the collector's complete
+    // manifest graph; never open a second writer or change catalog rows.
+    func withSpoolGCRead<T>(_ body: (Database) throws -> T) throws -> T {
+        try pool.read(body)
+    }
+
     @discardableResult
     public func ignoreUnboundCapture(
         captureID: String,

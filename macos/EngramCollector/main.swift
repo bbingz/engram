@@ -15,6 +15,10 @@ private struct Options {
     let centralEvidence: URL?
     let previewBytes: Int64
     let previewObjects: Int
+    let gcAction: String?
+    let gcRunID: String?
+    let approvalFile: URL?
+    let approvedSHA256: String?
 
     init(arguments: [String]) throws {
         var settings: String?
@@ -28,11 +32,15 @@ private struct Options {
         var centralEvidence: String?
         var previewBytes: Int64?
         var previewObjects: Int?
+        var gcAction: String?
+        var gcRunID: String?
+        var approvalFile: String?
+        var approvedSHA256: String?
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
             switch argument {
-            case "--settings", "--credentials-file", "--spool-root", "--central-evidence":
+            case "--settings", "--credentials-file", "--spool-root", "--central-evidence", "--approval-file":
                 guard index + 1 < arguments.count else { throw ArgumentsError.invalid }
                 let value = arguments[index + 1]
                 guard Self.validAbsolutePath(value) else { throw ArgumentsError.invalid }
@@ -45,11 +53,25 @@ private struct Options {
                 } else if argument == "--spool-root" {
                     guard spoolRoot == nil else { throw ArgumentsError.invalid }
                     spoolRoot = value
+                } else if argument == "--approval-file" {
+                    guard approvalFile == nil else { throw ArgumentsError.invalid }
+                    approvalFile = value
                 } else {
                     guard centralEvidence == nil else { throw ArgumentsError.invalid }
                     centralEvidence = value
                 }
                 index += 2
+            case "--apply":
+                guard gcAction == nil else { throw ArgumentsError.invalid }
+                gcAction = "apply"; index += 1
+            case "--restore", "--finalize":
+                guard gcAction == nil, index + 1 < arguments.count, UUID(uuidString: arguments[index + 1]) != nil else { throw ArgumentsError.invalid }
+                gcAction = String(argument.dropFirst(2)); gcRunID = arguments[index + 1]; index += 2
+            case "--approve-sha256":
+                guard approvedSHA256 == nil, index + 1 < arguments.count else { throw ArgumentsError.invalid }
+                let value = arguments[index + 1]
+                guard value.utf8.count == 64, value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw ArgumentsError.invalid }
+                approvedSHA256 = value; index += 2
             case "--spool-gc":
                 guard !spoolGC else { throw ArgumentsError.invalid }
                 spoolGC = true
@@ -92,6 +114,17 @@ private struct Options {
               !initialize || (!once && credentials == nil && !reconcileNativeEpoch),
               !reconcileNativeEpoch || (!once && credentials == nil),
               !dryRun || reconcileNativeEpoch || spoolGC else { throw ArgumentsError.invalid }
+        if let action = gcAction {
+            guard spoolGC, settings != nil, spoolRoot == nil, !dryRun,
+                  centralEvidence == nil, previewBytes == nil, previewObjects == nil,
+                  action == "restore" ? (approvalFile == nil && approvedSHA256 == nil) : (approvalFile != nil && approvedSHA256 != nil) else { throw ArgumentsError.invalid }
+        } else {
+            guard approvalFile == nil, approvedSHA256 == nil else { throw ArgumentsError.invalid }
+        }
+        self.gcAction = gcAction
+        self.gcRunID = gcRunID
+        self.approvalFile = approvalFile.map { URL(fileURLWithPath: $0) }
+        self.approvedSHA256 = approvedSHA256
         self.settings = URL(fileURLWithPath: input)
         self.credentials = credentials.map { URL(fileURLWithPath: $0) }
         self.once = once
@@ -122,6 +155,9 @@ usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
        EngramCollector --initialize-identity ABS
        EngramCollector --spool-gc (--spool-root ABS | --settings ABS) [--central-evidence ABS]
            [--max-preview-bytes N] [--max-preview-objects N] [--dry-run]
+       EngramCollector --settings ABS --spool-gc --apply --approval-file ABS --approve-sha256 HASH
+       EngramCollector --settings ABS --spool-gc --finalize RUN --approval-file ABS --approve-sha256 HASH
+       EngramCollector --settings ABS --spool-gc --restore RUN
        EngramCollector --help
 --once runs one bounded cycle; it does not wait for bootstrap or replica acknowledgements.
 --initialize creates a new private spool using the configured existing machine identity; it never starts collection.
@@ -129,9 +165,12 @@ usage: EngramCollector --settings ABS [--credentials-file ABS] [--once]
   "source roots suspended for native epoch change"): with the collector stopped it records each
   affected root's transition, clears its stored event checkpoint and forces a full walk; --dry-run only reports.
 --initialize-identity creates a new identity catalog only; use only after confirming this host has no existing identity.
---spool-gc only previews existing spool references as JSON on stdout. No locks, credentials, network or writes.
-  Potential bytes remain conditional on proof, escrow and other unverified gates; actionableBytes is always zero.
-  Apply, restore and finalize are not implemented. Byte/object budgets only bound the reported potential subset.
+--spool-gc defaults to a read-only preview, with no locks, credentials, network or writes.
+  Preview potential bytes remain conditional; actionableBytes is always zero.
+  --apply quarantines an approved batch; --finalize separately unlinks after the hold and fresh proof.
+  Both require private evidence bound by --approve-sha256. --restore needs no proof or token.
+  Mutating modes require a stopped collector and acquire its existing lock; they never stop services.
+  Quarantine does not free volume space. These modes never discover credentials or contact replicas.
 """
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -176,6 +215,19 @@ withExtendedLifetime(termination) { dispatchMain() }
 
 private func runCollector(_ options: Options) async -> Int32 {
     if options.spoolGC {
+        if let action = options.gcAction {
+            do {
+                let bytes = try CollectorSpoolGCOperator.run(settingsURL: options.settings, action: action,
+                    runID: options.gcRunID, approvalURL: options.approvalFile, approvedSHA256: options.approvedSHA256)
+                print(String(decoding: bytes, as: UTF8.self))
+                return 0
+            } catch {
+                let reason = (error as? CollectorSpoolGCError)?.rawValue
+                    ?? "operatorInputUnavailable"
+                FileHandle.standardError.write(Data("engram-collector: spool GC failed: \(reason)\n".utf8))
+                return 70
+            }
+        }
         do {
             let root = try options.spoolRoot ?? CollectorSpoolGCPreview.spoolRoot(settingsURL: options.settings)
             let report = try CollectorSpoolGCPreview.run(spoolRoot: root, centralEvidence: options.centralEvidence,

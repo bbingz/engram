@@ -18,6 +18,25 @@ private typealias PublicationWorker = EngramCollectorCore.CollectorPublicationWo
 private typealias WorkerError = EngramCollectorCore.CollectorPublicationWorkerError
 
 final class CollectorPublicationWorkerTests: XCTestCase {
+    func testSQLiteWalksPropagateGCAdmissionErrors_repro() async throws {
+        for source: EngramCollectorCore.SourceName in [.cursor, .opencode] {
+            for failure: EngramCollectorCore.CollectorSpoolGCError in [.spoolIntegrityBlocked, .spoolRestoreRequired] {
+                let f = try PublicationFixture(sourceName: source, legacySourceRoot: source == .cursor)
+                if source == .cursor { try f.writeCursorLegacyComposer("gc-error") }
+                let replicas = try await replicas(for: f)
+                do {
+                    let hooks = EngramCollectorCore.CollectorPublicationWorkerTestHooks(beforeCapture: { _ in throw failure })
+                    do {
+                        _ = try await f.worker(replicas.endpoints, hooks: hooks).runOnce(now: 100)
+                        XCTFail("GC error must escape the outer SQLite walk catch: \(source), \(failure)")
+                    } catch { XCTAssertEqual(error as? EngramCollectorCore.CollectorSpoolGCError, failure) }
+                    XCTAssertTrue(try f.owner.publicationIntents(limit: 8).isEmpty)
+                    await replicas.stop()
+                } catch { await replicas.stop(); throw error }
+            }
+        }
+    }
+
     func testDefaultClaudeRootPublishesIndependentDerivedSourceStreams() async throws {
         let f = try PublicationFixture(sourceName: .claudeCode)
         let replicas = try await replicas(for: f)
