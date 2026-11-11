@@ -146,3 +146,39 @@ or deployment. After deployment approval:
 5. Roll back by restoring the receiver's prior job/package and stopping only the
    new sampler. Retain observations for diagnosis; no database rollback or data
    deletion is necessary.
+
+## Verified rollout — 2026-11-11
+
+- Feature PR #511 merged as `8129554c` after 15 successful checks and two
+  conditional skips. HQ uses compatible-line commit `d83dcdd1`, not a main build.
+  Release receiver package: `remote-server-fleet-d83dcdd1-20261111`; SHA-256:
+  `677fec616d5b90e116c36e9ed8e88482b34142f6dd670534018b8d3b7beca574`.
+- `com.engram.web-fleet-status` is a separate user LaunchAgent, one-shot at load
+  and every 300 seconds, with an immutable script/private config and snapshot
+  under the existing HQ shadow state. System Python 3.9 was verified; three
+  publications, including an automatic scheduled run, succeeded with empty
+  stderr. All five configured hosts and central observations were available.
+- The receiver job changed only its executable and fleet snapshot setting.
+  Collector/index/archive PIDs and revisions did not change. Compatible-tree
+  RemoteServerCore 550/550 and UI/exporter 388/388 passed; package/signature,
+  typecheck and project-generation gates passed. Real Serve tests verified
+  editor 200, anonymous 401, foreign-origin 403, query 400, method 405, no-store,
+  typed projection and existing session/filter/search/Insights reads. No live
+  viewer authority was created merely for testing; the native viewer-403 gate
+  passed against the deployed-line implementation. Four real-Serve browser
+  combinations (desktop/mobile × dark/light) verified Machines cold load, refresh,
+  source-table layout, machine drilldown, reload, navigation privacy clearing,
+  identity-mode API logout, and equality of served JS with the compatible source.
+- Rollback receiver job: `hq/state/web-fleet/receiver-before.plist` under the
+  existing shadow root. Restore that job and restart only the receiver, then
+  unload `com.engram.web-fleet-status` if rolling back the whole feature. The
+  previous receiver package remains available; no database rollback is needed.
+- Separate unresolved observation: the existing Health/Overview chain fails
+  at page 19 with `limit=2` (503); the preceding pages/default first page work.
+  Its read code and the index process were not changed by this deployment.
+  Root cause is unverified. The separate Machines snapshot remains available;
+  do not reinterpret the Health failure as zero pending work or claim this
+  rollout remediated it. Named directory usage can be unreported if the bounded
+  `du` measurement times out; volume capacity/free are reported independently.
+  Private diagnostic evidence and browser results are
+  referenced from the deployment entry in `CHANGELOG.md`.
