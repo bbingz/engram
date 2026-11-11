@@ -4,8 +4,9 @@
 
 ### 2026-11-11
 
-- [新增] 已实现 Web「Machines」多机看板：会话、磁盘/目录占用、采集/冷却/扫描、上传/ACK、进程版本与中央索引状态；仅 editor 可读，缺失/过期明确标注。分支 `feat/web-fleet-dashboard-20261111`，尚未 push 或部署；详见 `CHANGELOG.md` 与 `docs/collector-fleet-dashboard.md`。
-- [验证] Swift 543 通过/1 架构跳过，脚本 1012 通过/50 条件跳过；类型、lint、四组桌面/手机深浅主题渲染、五台主机只读采样通过。旧版九轮 Web 升级仍在线（receiver `4b5b3e00`，PID 19042）。新看板上线需另行授权启用独立采样并替换 receiver，继续保留 HQ 兼容部署线；不重启 collector/index。证据和限制见 `CHANGELOG.md`。
+- [部署] Web「Machines」五机看板已上线：PR #511（`8129554c`）全绿合入，HQ 兼容部署线 Release 为 `d83dcdd1`、receiver PID 61479；独立只读采样每 300 秒更新，已观察到自动周期。旧包和回滚 plist 保留；collector、index、归档进程的 PID/版本均未变化。详见 `CHANGELOG.md` 与 `docs/collector-fleet-dashboard.md`。
+- [验证] 兼容线 Swift 550/550、UI/采样器 388/388；签名、类型、项目生成及线上权限/禁缓存/五机数据、会话筛选/搜索/Insights 验收通过。私有配置与原始观测不入库，未删除/GC、未改保留策略或凭据。完整证据见 `CHANGELOG.md`。
+- [未验证] 原 Health/Overview 链路 `limit=2` 第 19 页出现 503，前 18 页和默认首页正常，根因未定；本次未改该读取实现或重启 index。Machines 独立数据正常，不把此失败显示为健康零值；记录与后续入口见 `CHANGELOG.md`。
 
 - [变更] K6 大文件重采冷却已由 PR #509 合入 main（`b6cfbf9d`，CI 全绿）：上次捕获 ≥8 MiB 的 locator 10 分钟内延期，保留脏版本，到期采最新内容；首次/小文件不延迟，OpenCode/Cursor legacy 保留现有节奏。无删除、GC 或保留策略变更。详见 `CHANGELOG.md` 的 K6 条目。
 - [部署] 四台 collector 已顺序换为 `collector-k6-5c4b9772-20261111`（HQ 部署线 `4b5b3e00` 的后代，不从 main 构建）；校验哈希/签名、停机 epoch dry-run 全为 0、只改二进制路径，旧包与 plist 备份保留。service-index/Web 未动。详见 `CHANGELOG.md`。
