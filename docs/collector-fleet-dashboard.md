@@ -27,9 +27,9 @@ ACK, privacy-withheld, and retry counts. Missing queues/process observations rem
 **Not reported**, never healthy zeroes. Central values are labeled stale separately
 from host observation freshness. PIDs are identifiers and retain ungrouped digits.
 
-This presentation update is verified locally on `feat/web-fleet-table-20261111`;
-it has not been deployed. The dated rollout record below describes the earlier
-`d83dcdd1` release, not proof that this table-first change is live.
+The table-first presentation was deployed on 2026-11-11 from compatible revision
+`081426da` after PR #513 merged. The separate rollout records below distinguish
+the initial `d83dcdd1` fleet release from this receiver-only presentation update.
 
 ## Data flow and guarantees
 
@@ -173,7 +173,7 @@ or deployment. After deployment approval:
    new sampler. Retain observations for diagnosis; no database rollback or data
    deletion is necessary.
 
-## Verified rollout — 2026-11-11
+## Initial fleet rollout — 2026-11-11
 
 - Feature PR #511 merged as `8129554c` after 15 successful checks and two
   conditional skips. HQ uses compatible-line commit `d83dcdd1`, not a main build.
@@ -208,3 +208,38 @@ or deployment. After deployment approval:
   `du` measurement times out; volume capacity/free are reported independently.
   Private diagnostic evidence and browser results are
   referenced from the deployment entry in `CHANGELOG.md`.
+
+## Table-first rollout — 2026-11-11
+
+- Self-review: spec PASS / quality APPROVED. PR #513 merged as `874a9914`
+  after 13 successful CI checks and four conditional skips. HQ Release uses
+  compatible commit `081426da`, retaining the deployed AI-save conflict guard
+  and write-route wiring; this is not a main-built HQ executable.
+- Package `remote-server-fleet-table-081426da-20261111`, SHA-256
+  `e24acd12a0c4425192151bb4f8018a81f3d9dc37f898c5bf34553570cc8a4cc0`.
+  Receiver PID changed 61479→58762; only its executable argument changed, health
+  and actual served JS readiness passed. Old process exit was verified before
+  bootstrap; automatic rollback covers readiness failure.
+- Compatible RemoteServerCore 550/550 and UI/exporter 395/395 passed, together
+  with typecheck, project drift, Release package/signature verification. Live
+  editor/anonymous/origin/query/method/privacy/no-store checks passed, and served
+  JS/CSS matched compatible source. Four real desktop/mobile × dark/light cases
+  passed cold load, tables, keyboard interaction/contained scrolling, refresh
+  focus/expansion, drilldown, reload, navigation clearing and identity-mode API
+  logout. Viewer 403 is covered by native HTTP tests; no live viewer authority
+  was created merely for acceptance. Physical-device/Safari testing was not run.
+- Configured collector/index/archive PIDs and reported revision fields were
+  unchanged, as were PIDs for M1's additional receiver and archive jobs. Sampler job/config fingerprints were unchanged;
+  its next automatic publication observed five reachable hosts and the new receiver
+  PID/revision, with last sampler exit 0. No sampler reload, schema, credentials,
+  retention, deletion or GC changes.
+- **UI-only rollback:** restore the private
+  `hq/state/web-fleet/table-081426da-20261111/receiver-before.plist` and restart only
+  the receiver to retained `d83dcdd1`. **Leave the existing sampler loaded**; unlike
+  initial feature rollback, this update does not install or remove it. No database
+  rollback is needed.
+- Overview remains intermittently unavailable: six 503 responses were recorded
+  across live browser acceptance; two Health views failed and two loaded. The
+  index/read implementation was not changed, root cause remains unverified, and
+  this rollout does not claim to repair it or capture gaps. Evidence references
+  are in the table-first deployment entry in `CHANGELOG.md`; raw data remains private.
