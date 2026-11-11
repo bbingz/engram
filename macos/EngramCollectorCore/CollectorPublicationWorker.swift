@@ -1415,6 +1415,7 @@ actor CollectorPublicationWorker {
             }
         } catch is CancellationError { throw CancellationError() }
         catch let error as CollectorPublicationWorkerError where error == .staleClaim || error == .invalidConfiguration { throw error }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { try deferWalk() }
     }
 
@@ -1473,6 +1474,7 @@ actor CollectorPublicationWorker {
                 && prior.cwd.utf8.elementsEqual(session.cwd.utf8)
                 && prior.composer == session.composer && prior.bubbles == session.bubbles
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return false }
     }
 
@@ -1580,6 +1582,8 @@ actor CollectorPublicationWorker {
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as CollectorPublicationWorkerError where error == .staleClaim {
+            throw error
+        } catch let error as CollectorSpoolGCError {
             throw error
         } catch {
             try deferWalk()
@@ -2019,6 +2023,7 @@ actor CollectorPublicationWorker {
             }
             result = ArchiveCaptureResult(capture: capture, manifest: manifest)
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { throw CollectorPublicationWorkerError.invalidCapture }
         // One whole-transcript assessment of these immutable, just re-verified CAS
         // bytes serves both replicas and retries. authorize still reads a fresh
@@ -2039,6 +2044,7 @@ actor CollectorPublicationWorker {
             let object: Data
             do { object = try cas.readObject(sha256: chunk.rawSHA256, maximumByteCount: chunk.rawByteCount) }
             catch is CancellationError { throw CancellationError() }
+            catch let error as CollectorSpoolGCError { throw error }
             catch { throw CollectorPublicationWorkerError.invalidCapture }
             guard Int64(object.count) == chunk.rawByteCount else { throw CollectorPublicationWorkerError.invalidCapture }
             let path = "/v2/archive/objects/\(chunk.rawSHA256)"
@@ -2077,14 +2083,9 @@ actor CollectorPublicationWorker {
         catch { throw CollectorPublicationWorkerError.withheld }
         let format = formats[root.rootID] ?? Self.defaultFormat(root.source)
         if let prior, prior.isCurrent(for: capture, policy: current, format: format) { return prior }
-        let maximumLineBytes: Int
-        switch format {
-        case .codex, .claudeCode, .pi, .copilot: maximumLineBytes = 32 * 1024 * 1024
-        default: maximumLineBytes = CollectorPrivacyLimits().maxLineBytes
-        }
         try testHooks.beforePrivacyAssessment?(capture.capture.unboundManifestSHA256)
         let assessment = try CollectorPrivacyProof.assess(capture: capture, cas: cas, format: format, policy: current,
-            limits: .init(maxSourceBytes: budget.maxCaptureBytes, maxLineBytes: maximumLineBytes))
+            limits: CollectorPrivacyProof.limits(format: format, maximumSourceBytes: budget.maxCaptureBytes))
         guard case .eligible(let proof) = assessment else { throw CollectorPublicationWorkerError.withheld }
         return proof
     }
@@ -2374,7 +2375,7 @@ actor CollectorPublicationWorker {
             && replica.bearerToken.utf8.allSatisfy { (33...126).contains($0) }
     }
 
-    private static func sourceGeneration(root: CollectorRootConfiguration, relativePath: String,
+    static func sourceGeneration(root: CollectorRootConfiguration, relativePath: String,
         inspect: ((Int32, ArchiveSourceGeneration) throws -> Void)? = nil) throws -> ArchiveSourceGeneration {
         guard CollectorInventoryStore.isSafeRelativePath(relativePath),
               root.rootPath.utf8.count + relativePath.utf8.count + 1 <= CollectorPOSIXRootEnumerator.maximumPathBytes else {

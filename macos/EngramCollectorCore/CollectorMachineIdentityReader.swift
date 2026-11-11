@@ -18,16 +18,37 @@ public enum CollectorMachineIdentityReader {
         if let expectedMachineID, UUID(uuidString: expectedMachineID) == nil {
             throw CollectorMachineIdentityError.invalidMachineID
         }
+        let value: String
+        do {
+            value = try withReadOnlyDatabase(from: catalogURL) { db in
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT CASE WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) = 36
+                                THEN value ELSE NULL END AS machine_id
+                    FROM archive_metadata WHERE key = 'machine_id' LIMIT 2
+                    """)
+                guard rows.count == 1, let value: String = rows[0]["machine_id"], UUID(uuidString: value) != nil else {
+                    throw CollectorMachineIdentityError.invalidMachineID
+                }
+                return value
+            }
+        } catch let error as CollectorMachineIdentityError { throw error }
+        catch { throw CollectorMachineIdentityError.unavailable }
+        if let expectedMachineID, expectedMachineID != value {
+            throw CollectorMachineIdentityError.identityMismatch(expected: expectedMachineID, actual: value)
+        }
+        return value
+    }
+
+    /// Shared strict opener for existing collector databases. No migration,
+    /// owner lock, writable mapping, sidecar repair, or immutable live-WAL view.
+    static func withReadOnlyDatabase<T>(from catalogURL: URL, _ body: (Database) throws -> T) throws -> T {
         guard catalogURL.isFileURL,
-              ArchiveSourceDescriptor.normalizedAbsolutePath(catalogURL.path) == catalogURL.path else {
+              isAbsoluteLexicalPath(catalogURL.path) else {
             throw CollectorMachineIdentityError.unsafePath
         }
         try validateDirectory(catalogURL.deletingLastPathComponent())
         let expected = try fileIdentity(catalogURL)
-        guard catalogURL.resolvingSymlinksInPath().standardizedFileURL.path == catalogURL.path,
-              let resolved = Darwin.realpath(catalogURL.path, nil) else { throw CollectorMachineIdentityError.unsafePath }
-        let canonicalPath = String(cString: resolved)
-        Darwin.free(resolved)
+        let canonicalPath = try canonicalExistingPath(catalogURL)
         let descriptor = Darwin.open(catalogURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard descriptor >= 0 else { throw CollectorMachineIdentityError.unavailable }
         defer { _ = Darwin.close(descriptor) }
@@ -77,34 +98,39 @@ public enum CollectorMachineIdentityReader {
         catch let error as CollectorMachineIdentityError { throw error }
         catch { throw CollectorMachineIdentityError.unavailable }
 
-        let value: String
-        do {
-            value = try database.read { db in
-                // Bound both result count and value size before bridging to
-                // Foundation. Corrupt or duplicated metadata is not an identity.
-                let rows = try Row.fetchAll(db, sql: """
-                    SELECT CASE WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) = 36
-                                THEN value ELSE NULL END AS machine_id
-                    FROM archive_metadata WHERE key = 'machine_id' LIMIT 2
-                    """)
-                guard rows.count == 1, let value: String = rows[0]["machine_id"], UUID(uuidString: value) != nil else {
-                    throw CollectorMachineIdentityError.invalidMachineID
-                }
-                try validateOpenedDatabase(db, url: catalogURL, expected: expected)
-                return value
-            }
-        } catch let error as CollectorMachineIdentityError { throw error }
-        catch { throw CollectorMachineIdentityError.unavailable }
-        if let expectedMachineID, expectedMachineID != value {
-            throw CollectorMachineIdentityError.identityMismatch(expected: expectedMachineID, actual: value)
+        defer { try? database.close() }
+        return try database.read { db in
+            try validateOpenedDatabase(db, url: catalogURL, expected: expected)
+            let result = try body(db)
+            try validateOpenedDatabase(db, url: catalogURL, expected: expected)
+            return result
         }
-        return value
+    }
+
+    /// Foundation can shorten real /private paths to their standard macOS
+    /// aliases. Compare against realpath first; accept its Foundation spelling
+    /// too, but never an arbitrary symlink spelling supplied by the caller.
+    static func canonicalExistingPath(_ url: URL) throws -> String {
+        guard url.isFileURL, isAbsoluteLexicalPath(url.path),
+              let pointer = Darwin.realpath(url.path, nil) else { throw CollectorMachineIdentityError.unsafePath }
+        defer { Darwin.free(pointer) }
+        let path = String(cString: pointer)
+        guard url.path == path || url.path == URL(fileURLWithPath: path).resolvingSymlinksInPath().path else {
+            throw CollectorMachineIdentityError.unsafePath
+        }
+        return path
+    }
+
+    static func isAbsoluteLexicalPath(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), path.utf8.count <= 4096, !path.utf8.contains(0) else { return false }
+        return path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
     public static func verifyShadowIfPresent(at shadowRoot: URL, machineID: String) throws {
         guard UUID(uuidString: machineID) != nil else { throw CollectorMachineIdentityError.invalidMachineID }
         guard shadowRoot.isFileURL,
-              ArchiveSourceDescriptor.normalizedAbsolutePath(shadowRoot.path) == shadowRoot.path else {
+              isAbsoluteLexicalPath(shadowRoot.path) else {
             throw CollectorMachineIdentityError.unsafePath
         }
         var info = stat()

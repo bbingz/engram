@@ -97,17 +97,7 @@ function makeSafeFixture(casPath = legacyCASPath): string {
       '}',
     ].join('\n'),
   );
-  write(
-    root,
-    casPath,
-    [
-      'guard Darwin.unlink(objectURL.path) == 0 else {',
-      '  throw TestError()',
-      '}',
-      '_ = Darwin.unlink(temporaryURL.path)',
-      '_ = Darwin.unlink(staged.temporaryURL.path)',
-    ].join('\n'),
-  );
+  write(root, casPath, readFileSync(join(repoRoot, sharedCASPath), 'utf8'));
   write(
     root,
     'macos/EngramCoreWrite/ArchiveV2/ArchiveSourceReclaimer.swift',
@@ -120,7 +110,10 @@ function makeSafeFixture(casPath = legacyCASPath): string {
   write(
     root,
     'macos/EngramRemoteServer/Core/ArchiveStore.swift',
-    '_ = Darwin.unlink(temporaryURL.path)\n',
+    readFileSync(
+      join(repoRoot, 'macos/EngramRemoteServer/Core/ArchiveStore.swift'),
+      'utf8',
+    ),
   );
   write(
     root,
@@ -156,6 +149,162 @@ function makeSafeFixture(casPath = legacyCASPath): string {
 }
 
 describe('archive v2 release safety gate', () => {
+  it.each([
+    [
+      'qualified POSIX remove',
+      'import Darwin\nfunc bypass(_ path: String) { _ = Darwin.remove(path) }',
+    ],
+    [
+      'bare POSIX remove',
+      'import Darwin\nfunc bypass(_ path: String) { _ = remove(path) }',
+    ],
+    [
+      'bare finalize wrapper',
+      'extension CollectorSpoolGCFiles { func bypass(_ path: String, digest: String, identity: Identity) throws { try finalizeUnlink(path, digest: digest, expected: identity) {} } }',
+    ],
+  ])('rejects review bypass: %s', (_name, source) => {
+    const root = makeSafeFixture();
+    write(root, 'macos/EngramCollectorCore/ReviewBypass.swift', source);
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it.each([
+    [
+      sharedCASPath,
+      'Self.writeAll(bytes, to: descriptor)',
+      'Darwin.unlink(temporaryURL.path)',
+    ],
+    [
+      sharedCASPath,
+      'validateStaged(staged, info: info, expectedLinkCount: expectedLinkCount)',
+      'Darwin.unlink(staged.temporaryURL.path)',
+    ],
+    [
+      'macos/EngramRemoteServer/Core/ArchiveStore.swift',
+      'writeAll(bytes, to: fd)',
+      'Darwin.unlink(temporaryURL.path)',
+    ],
+    [
+      'macos/EngramRemoteServer/Core/ArchiveStore.swift',
+      'writeAll(envelope, to: descriptor)',
+      'Darwin.unlink(temporaryURL.path)',
+    ],
+    [
+      'macos/EngramRemoteServer/Core/ArchiveStore.swift',
+      'Self.writeAllBytes(fd: fd, data: out)',
+      'Darwin.unlink(temporaryURL.path)',
+    ],
+  ])(
+    'rejects changes inside reviewed cleanup %s / %s',
+    (path, before, after) => {
+      const root = makeSafeFixture(sharedCASPath);
+      const source = readFileSync(join(repoRoot, path), 'utf8');
+      expect(source).toContain(before);
+      write(root, path, source.replaceAll(before, after));
+      expect(runGate(root).status).not.toBe(0);
+    },
+  );
+
+  it.each([sharedCASPath, 'macos/EngramRemoteServer/Core/ArchiveStore.swift'])(
+    'rejects a neighboring temporary-name cleanup in %s',
+    (path) => {
+      const root = makeSafeFixture(sharedCASPath);
+      const source = readFileSync(join(repoRoot, path), 'utf8');
+      write(
+        root,
+        path,
+        `${source}\nfunc reviewBypass(_ temporaryURL: URL) { _ = Darwin.unlink(temporaryURL.path) }\n`,
+      );
+      expect(runGate(root).status).not.toBe(0);
+    },
+  );
+
+  it('rejects edits or neighboring calls around reviewed GC and temporary cleanup functions', () => {
+    for (const [path, before, after] of [
+      [
+        'macos/EngramCollectorCore/CollectorSpoolGCFiles.swift',
+        'try authorizeIntent()',
+        '',
+      ],
+      [
+        'macos/EngramCollectorCore/CollectorSpoolGCFiles.swift',
+        'func availableBytes()',
+        'func bypass() { unlinkat(quarantineParent, name, 0) }\n    func availableBytes()',
+      ],
+      [
+        'macos/EngramCollectorCore/CollectorSpoolGCExecutor.swift',
+        'try queue.write { db in',
+        'try queue.read { db in',
+      ],
+      [
+        'macos/EngramCollectorCore/CollectorSQLiteSnapshotLease.swift',
+        'unlinkat(staging.childFD, $0, 0)',
+        'unlinkat(otherFD, $0, 0)',
+      ],
+    ]) {
+      const root = makeSafeFixture();
+      const source = readFileSync(join(repoRoot, path), 'utf8');
+      // Replace all occurrences so the intended finalize body is also mutated.
+      write(root, path, source.replaceAll(before, after));
+      expect(runGate(root).status, path).not.toBe(0);
+    }
+  });
+
+  it('rejects exposing the legacy CAS removal API to CollectorCore', () => {
+    const root = makeSafeFixture(sharedCASPath);
+    const source = readFileSync(join(repoRoot, sharedCASPath), 'utf8');
+    write(
+      root,
+      sharedCASPath,
+      source.replace(
+        '#if !ENGRAM_COLLECTOR_CORE\n    public func removeObject',
+        '    public func removeObject',
+      ),
+    );
+    expect(runGate(root).status).not.toBe(0);
+  });
+
+  it.each([
+    'macos/EngramCollectorCore/nested/Bypass.swift',
+    'macos/EngramCollector/Bypass.swift',
+    'macos/EngramCoreWrite/CaptureIngest/nested/Bypass.swift',
+    'macos/EngramService/Core/ServiceCaptureBypass.swift',
+    'macos/EngramService/Core/ServiceCaptureNested/Bypass.swift',
+  ])('rejects primitive, wrapper and protected SQL bypasses in %s', (path) => {
+    for (const mutation of [
+      'try FileManager.default.removeItem(at: url)',
+      'try cas.removeObject(sha256: digest)',
+      'try files.finalizeUnlink(path, digest: digest, expected: identity) {}',
+      'try db.execute(sql: "DELETE FROM collector_publications")',
+      'try db.execute(sql: "DROP TABLE archive_captures")',
+      'try db.execute(sql: "DELETE FROM main.collector_publications")',
+    ]) {
+      const root = makeSafeFixture();
+      write(root, path, mutation);
+      expect(runGate(root).status, mutation).not.toBe(0);
+    }
+  });
+
+  it('rejects changes to the storage-only manual auth then 405 guard', () => {
+    const path = 'macos/EngramRemoteServer/StorageOnlyMain.swift';
+    const source = readFileSync(join(repoRoot, path), 'utf8');
+    for (const modified of [
+      source.replace('if req.method == "DELETE"', 'if req.method == "PATCH"'),
+      source.replace(
+        'return Self.archiveError(status: 405, reason: "Method Not Allowed", code: "method_not_allowed")',
+        'return HTTPResponse.empty(status: 204, reason: "No Content")',
+      ),
+      source.replace(
+        'guard Self.authorized(req, token: token) else { return Self.archiveUnauthorized() }',
+        '',
+      ),
+    ]) {
+      const root = makeSafeFixture();
+      write(root, path, modified);
+      expect(runGate(root).status).not.toBe(0);
+    }
+  });
+
   it('is present and passes against the repository', () => {
     expect(existsSync(script)).toBe(true);
     const result = runGate();

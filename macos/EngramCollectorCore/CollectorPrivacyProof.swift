@@ -95,6 +95,15 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
     public let policySHA256: String
     private let observedProjectRoots: [String]
 
+    static func limits(format: SourceMetadataProjection.Format, maximumSourceBytes: Int64) -> CollectorPrivacyLimits {
+        let lineBytes: Int
+        switch format {
+        case .codex, .claudeCode, .pi, .copilot: lineBytes = 32 * 1024 * 1024
+        default: lineBytes = CollectorPrivacyLimits().maxLineBytes
+        }
+        return .init(maxSourceBytes: maximumSourceBytes, maxLineBytes: lineBytes)
+    }
+
     public static func assess(
         capture: ArchiveCaptureResult,
         cas: ImmutableArchiveCAS,
@@ -206,6 +215,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }
@@ -368,6 +379,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             guard session.databaseGeneration == manifest.generation,
                   try ArchiveCursorLegacyContext(session: session) == context else { return .withheld(.invalidCapture) }
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
         try Task.checkCancellation()
         // Ownership is frozen in the captured body. Never rediscover the live
@@ -436,6 +448,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                 members[Data(file.relativePath.utf8)] = bytes
             }
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
 
         var storedText: String?
@@ -455,6 +468,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                     budget: .init(maximumSourceBytes: limits.maxSourceBytes, maximumMetadataBytes: limits.maxLineBytes))
             } catch is CancellationError { throw CancellationError() }
             catch CollectorSQLiteSnapshotError.exceededBudget { return .withheld(.limitsExceeded) }
+            catch let error as CollectorSpoolGCError { throw error }
             catch { return .withheld(.invalidCapture) }
         }
         let metadataRecords = (storedText == nil ? 0 : 1) + (liveText == nil ? 0 : 1)
@@ -530,6 +544,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                 budget: .init(maximumByteCount: limits.maxSourceBytes, maximumRows: limits.maxRecords))
         } catch is CancellationError { throw CancellationError() }
         catch CollectorOpenCodeSourceError.exceededBudget { return .withheld(.limitsExceeded) }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
         guard metadata.nativePayloadByteCount == context.nativePayloadByteCount else { return .withheld(.invalidCapture) }
         guard metadata.cwd.utf8.count <= limits.maxLineBytes,
@@ -581,6 +596,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }
@@ -736,6 +753,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
                 hasher.update(data: bytes)
             }
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
         guard total == manifest.rawByteCount,
               hasher.finalize().map({ String(format: "%02x", $0) }).joined() == manifest.wholeSourceSHA256 else {
@@ -829,6 +847,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }
@@ -968,6 +988,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }
@@ -1100,6 +1122,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
             try verifier.finish()
         } catch is CancellationError { throw CancellationError() }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
         guard total == manifest.rawByteCount,
               hasher.finalize().map({ String(format: "%02x", $0) }).joined() == manifest.wholeSourceSHA256 else {
@@ -1172,6 +1195,7 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
         } catch is CancellationError { throw CancellationError() }
         catch SourceMetadataProjection.ClineArrayError.limitsExceeded { return .withheld(.limitsExceeded) }
         catch SourceMetadataProjection.ClineArrayError.malformed { return .withheld(.malformedMetadata) }
+        catch let error as CollectorSpoolGCError { throw error }
         catch { return .withheld(.invalidCapture) }
         guard count == manifest.rawByteCount,
               hasher.finalize().map({ String(format: "%02x", $0) }).joined() == manifest.wholeSourceSHA256 else {
@@ -1293,6 +1317,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }
@@ -1412,6 +1438,8 @@ public struct CollectorPrivacyProof: Equatable, Sendable {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as CollectorSpoolGCError {
+            throw error
         } catch {
             return .withheld(.invalidCapture)
         }

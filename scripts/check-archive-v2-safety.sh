@@ -42,6 +42,17 @@ append_archive_files "$ROOT_DIR/macos/EngramCaptureShared" '*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramRemoteServer/Core" 'Archive*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramService/Core" 'Archive*.swift'
 append_archive_files "$ROOT_DIR/macos/EngramService/Core" 'EngramServiceCommandHandler+Archive*.swift'
+append_archive_files "$ROOT_DIR/macos/EngramService/Core" 'ServiceCapture*.swift'
+for directory in "$ROOT_DIR"/macos/EngramService/Core/ServiceCapture*; do
+  if [[ -d "$directory" ]]; then
+    while IFS= read -r path; do archive_files+=("$path"); done < <(rg --files "$directory" -g '*.swift' | sort)
+  fi
+done
+for directory in EngramCollectorCore EngramCollector EngramCoreWrite/CaptureIngest; do
+  if [[ -d "$ROOT_DIR/macos/$directory" ]]; then
+    while IFS= read -r path; do archive_files+=("$path"); done < <(rg --files "$ROOT_DIR/macos/$directory" -g '*.swift' | sort)
+  fi
+done
 
 (( ${#archive_files[@]} > 0 )) || fail "no archive v2 production files found"
 
@@ -55,6 +66,7 @@ fi
 node - "$ROOT_DIR" "${archive_files[@]}" <<'NODE'
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
+const { createHash } = require('node:crypto');
 
 const root = process.argv[2];
 const archiveSourceReclaimer = resolve(
@@ -65,17 +77,16 @@ const immutableArchiveCASPaths = new Set([
   resolve(root, 'macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift'),
   resolve(root, 'macos/EngramCaptureShared/ImmutableArchiveCAS.swift'),
 ]);
-const archiveStore = resolve(
-  root,
-  'macos/EngramRemoteServer/Core/ArchiveStore.swift',
-);
 const archiveTranscriptResolver = resolve(
   root,
   'macos/EngramService/Core/ArchiveTranscriptResolver.swift',
 );
 
 const primitivePatterns = [
+  { name: 'destructive CAS wrapper', pattern: /\b(?:removeObject|finalizeUnlink|evictEligibleObjects|removeContents)\s*\(/g },
   { name: 'Darwin.unlink', pattern: /\bDarwin\s*\.\s*unlink\s*\(/g },
+  { name: 'Darwin.remove or rmdir', pattern: /\bDarwin\s*\.\s*(?:remove|rmdir)\s*\(/g },
+  { name: 'bare unlink, remove or rmdir', pattern: /(?<![.\w])(?:unlink|remove|rmdir)\s*\(/g },
   { name: 'unlinkat', pattern: /\bunlinkat\s*\(/g },
   {
     name: 'FileManager.default.removeItem',
@@ -174,18 +185,82 @@ function failPrimitive(path, line, primitive) {
   process.exit(1);
 }
 
+
+function functionRanges(source, name) {
+  const declaration = new RegExp('\\bfunc\\s+' + name + '\\s*\\(', 'g');
+  const found = [...source.matchAll(declaration)];
+  return found.flatMap(({ index: start }) => {
+    const open = source.indexOf('{', start);
+    let depth = 0, quoted = false, triple = false;
+    for (let i = open; i < source.length; i += 1) {
+      if (triple) {
+        if (source.slice(i, i + 3) === '"""') { triple = false; i += 2; }
+        continue;
+      }
+      if (quoted) {
+        if (source[i] === '\\') { i += 1; continue; }
+        if (source[i] === '"') quoted = false;
+        continue;
+      }
+      if (source.slice(i, i + 3) === '"""') { triple = true; i += 2; continue; }
+      if (source[i] === '"') { quoted = true; continue; }
+      if (source[i] === '{') depth += 1;
+      if (source[i] === '}' && --depth === 0) return [{ start, end: i + 1 }];
+    }
+    return [];
+  });
+}
+
+// Each digest covers the complete reviewed function, not merely its argument
+// spelling. Edits require review and mutation tests before updating the digest.
+const reviewedFunctions = [
+  ['macos/EngramCaptureShared/ImmutableArchiveCAS.swift', 'stage', 'a7bea85d3a6b6b2055546475423311f1e3758582fc335bf3368bf7773449502a'],
+  ['macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift', 'stage', 'a7bea85d3a6b6b2055546475423311f1e3758582fc335bf3368bf7773449502a'],
+  ['macos/EngramCaptureShared/ImmutableArchiveCAS.swift', 'discardStaged', 'ff8afe2a45757dc1d9b6c744dab6d9693e8ca8e8ba2d0f4e06573caca278a2b8'],
+  ['macos/EngramCoreWrite/ArchiveV2/ImmutableArchiveCAS.swift', 'discardStaged', 'ff8afe2a45757dc1d9b6c744dab6d9693e8ca8e8ba2d0f4e06573caca278a2b8'],
+  ['macos/EngramRemoteServer/Core/ArchiveStore.swift', 'publishPublicationMetadata', '51ec6f1323f8c86c3aa11c3791cba0887b124a73247d19033ff80cd705e5fb99'],
+  ['macos/EngramRemoteServer/Core/ArchiveStore.swift', 'publish', '5ea291a5e2f9467c39d5ba121144d4304228e2de6de8ca2036f0cd0042e44ace'],
+  ['macos/EngramRemoteServer/Core/ArchiveStore.swift', 'writeEnvelopeCache', '035919f7904ae9c33c4f9dd9b82fef2980c593364e75042508229bfdaf91e080'],
+  ['macos/EngramService/Core/ArchiveReclamationCoordinator.swift', 'executeCycle', '48b63a042a59e87af9a0c3aacdaa1de519a2774274a79fc9251d3a090e18a6f0'],
+  ['macos/EngramCollectorCore/CollectorSQLiteSnapshotLease.swift', 'createOwnedStaging', 'dc6b306a8b3a3687682e54551e93ed59de7f13c93c73eb7e5c4406b2f40a2f8b'],
+  ['macos/EngramCollectorCore/CollectorSQLiteSnapshotLease.swift', 'destroyOwnedStaging', 'cb189c59e4d7c3ce49facedea231e999c03452ab7efe300d744946a72185be67'],
+  ['macos/EngramCoreWrite/CaptureIngest/CaptureIngestReplay.swift', 'cleanup', '22c9d3889e6cc4ea7070cc1a53aada82790b22adeeb31331c7d8946c1f6a12e7'],
+  ['macos/EngramCoreWrite/CaptureIngest/CaptureIngestReplay.swift', 'removeContents', '3e0749b753e59c1ed3e2a495f6e5043e580f19f83b825b8e1bb427c8a90abfeb'],
+  ['macos/EngramCollectorCore/CollectorSpoolGCFiles.swift', 'finalizeUnlink', 'a8218d00ee1332037e93d29fe2f64030a3efa3cea060b119b59c70ffca1a27f1'],
+  ['macos/EngramCollectorCore/CollectorSpoolGCExecutor.swift', 'finalize', 'f7d93911d2c0fa82da27fd56057b084775e3dc516440f8b7658cbe1eba905276'],
+  ['macos/EngramCoreWrite/ArchiveV2/ArchiveCASEvictor.swift', 'evictEligibleObjects', '154b243fbeb3c27671f57bd18135c17e709ee611efc81d8d2848bccef3deb65f'],
+];
+function reviewedCall(path, source, index) {
+  return reviewedFunctions.some(([relative, name, digest]) => {
+    if (path !== resolve(root, relative)) return false;
+    return functionRanges(source, name).some(range => index >= range.start && index < range.end &&
+      createHash('sha256').update(source.slice(range.start, range.end).replace(/\s+/g, '')).digest('hex') === digest);
+  });
+}
+
 let sourceReclaimerUnlinkCount = 0;
 let immutableObjectUnlinkCount = 0;
 
 for (const path of process.argv.slice(3)) {
   const source = readFileSync(path, 'utf8');
   const scanSource = maskComments(source);
+  if (immutableArchiveCASPaths.has(path) && /public\s+func\s+removeObject/.test(scanSource) &&
+      !/#if\s+!ENGRAM_COLLECTOR_CORE\s+public\s+func\s+removeObject/.test(scanSource)) {
+    failPrimitive(path, 1, 'unguarded collector CAS removal API');
+  }
+  const protectedSQL = /\b(?:DELETE\s+FROM|DROP\s+TABLE(?:\s+IF\s+EXISTS)?)\s+(?:["`\[]?[A-Za-z_][A-Za-z0-9_]*["`\]]?\s*\.\s*)?["`\[]?(?:archive_captures|collector_publications|collector_publication_replicas|collector_gc_runs|collector_gc_objects|collector_spool_object_residency)\b/i;
+  if (protectedSQL.test(scanSource)) failPrimitive(path, 1, 'protected capture/publication SQL');
+  if (/\/EngramCollector(?:Core)?\//.test(path) && /\b(?:ArchiveCASEvictor|ArchiveSourceReclaimer)\b/.test(scanSource)) {
+    failPrimitive(path, 1, 'legacy reclamation wrapper');
+  }
   const callsByOpenParen = new Map();
 
   for (const { name, pattern } of primitivePatterns) {
     pattern.lastIndex = 0;
     let match;
     while ((match = pattern.exec(scanSource)) !== null) {
+      // A declaration is not a call. Its body is still scanned independently.
+      if (/\bfunc\s*$/.test(scanSource.slice(0, match.index))) continue;
       const relativeOpenParen = match[0].lastIndexOf('(');
       const openParen = match.index + relativeOpenParen;
       if (!callsByOpenParen.has(openParen)) {
@@ -204,6 +279,7 @@ for (const path of process.argv.slice(3)) {
       .slice(openParen + 1, closeParen)
       .replace(/\s+/g, '');
 
+    if (reviewedCall(path, scanSource, start)) continue;
     if (
       name === 'Darwin.unlink' &&
       path === archiveSourceReclaimer &&
@@ -218,21 +294,6 @@ for (const path of process.argv.slice(3)) {
       argument === 'objectURL.path'
     ) {
       immutableObjectUnlinkCount += 1;
-      continue;
-    }
-    if (
-      name === 'Darwin.unlink' &&
-      immutableArchiveCASPaths.has(path) &&
-      (argument === 'temporaryURL.path' ||
-        argument === 'staged.temporaryURL.path')
-    ) {
-      continue;
-    }
-    if (
-      name === 'Darwin.unlink' &&
-      path === archiveStore &&
-      argument === 'temporaryURL.path'
-    ) {
       continue;
     }
     if (
@@ -338,6 +399,18 @@ function closureBody(source, start, stripComments = true) {
 
 for (const path of process.argv.slice(3)) {
   const source = readFileSync(path, 'utf8');
+  if (path.endsWith('/EngramRemoteServer/StorageOnlyMain.swift')) {
+    const start = source.indexOf('    private func handleArchiveV2(');
+    const end = source.indexOf('\n    private ', start + 1);
+    const body = source.slice(start, end < 0 ? source.length : end).replace(/\/\/.*$/gm, '').replace(/\s+/g, ' ');
+    const required = 'if req.method == "DELETE" { let endpoint = Self.deleteEndpointName(path: req.path) return observed(req, endpoint: endpoint, archiveMutation: false) { guard Self.authorized(req, token: token) else { return Self.archiveUnauthorized() } return Self.archiveError(status: 405, reason: "Method Not Allowed", code: "method_not_allowed") } }';
+    const beforeDispatch = body.split('if req.path.hasPrefix')[0];
+    const prefix = 'private func handleArchiveV2( _ req: HTTPRequest, archive: EngramRemoteArchiveConfig, store: ArchiveStore ) -> HTTPResponse { let token = archive.bearerToken ';
+    if (start < 0 || beforeDispatch.trim() !== prefix + required || (body.match(/"DELETE"/g) || []).length !== 1) {
+      console.error('archive v2 safety gate failed: storage-only manual v2 DELETE must authorize then return 405 before dispatch');
+      process.exit(1);
+    }
+  }
   directDelete.lastIndex = 0;
   let match;
   while ((match = directDelete.exec(source)) !== null) {

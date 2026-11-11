@@ -22,6 +22,18 @@ final class CollectorMachineIdentityReaderTests: XCTestCase {
         if let root { try FileManager.default.removeItem(at: root) }
     }
 
+    func testMissingMetadataTablePreservesUnavailableErrorWithoutWrites() throws {
+        let databaseURL = root.appendingPathComponent("archive.sqlite")
+        let writer = try fixtureDatabase(databaseURL, machineID: machineID)
+        try writer.write { try $0.execute(sql: "DROP TABLE archive_metadata") }
+        try secureFixtureFiles()
+        let before = try snapshot()
+        XCTAssertThrowsError(try CollectorMachineIdentityReader.read(from: databaseURL)) { error in
+            XCTAssertEqual(error as? CollectorMachineIdentityError, .unavailable)
+        }
+        XCTAssertEqual(try snapshot(), before)
+    }
+
     func testSameProcessWritableSharedMemoryIsRejectedWithoutChangingFiles() throws {
         let databaseURL = root.appendingPathComponent("archive.sqlite")
         let writer = try fixtureDatabase(databaseURL, machineID: otherMachineID, wal: true)

@@ -489,7 +489,10 @@ final class CollectorInventoryOwner {
     }
 
     func claimPublications(replicaID: String, limit: Int, now: Int64) throws -> [CollectorPublicationClaim] {
-        try withPublicationStore { try $0.claimPublications(replicaID: replicaID, limit: limit, now: now) }
+        try withPublicationStore { store in
+            if let database { try spoolGCAdmission?(database) }
+            return try store.claimPublications(replicaID: replicaID, limit: limit, now: now)
+        }
     }
 
     func recordPublicationACK(_ claim: CollectorPublicationClaim, canonicalBytes: Data) throws -> Bool {
@@ -861,6 +864,25 @@ final class CollectorInventoryOwner {
         }
         if shadowDescriptor >= 0 { _ = Darwin.close(shadowDescriptor); shadowDescriptor = -1 }
         closed = true
+    }
+
+    private var spoolGCAdmission: ((DatabaseQueue) throws -> Void)?
+
+    func installSpoolGCAdmission(_ admission: @escaping (DatabaseQueue) throws -> Void) throws {
+        try withSpoolGC { _ in spoolGCAdmission = admission }
+    }
+
+    /// GC shares the existing owner mutex and flock; no second writer/lock.
+    func spoolGCRoot() throws -> URL { try withStore { _ in shadowRoot } }
+
+    func withSpoolGC<T>(_ operation: (DatabaseQueue) throws -> T) throws -> T {
+        mutex.lock()
+        defer { mutex.unlock() }
+        guard !closed, lockHeld, let database else { throw CollectorInventoryOwnerError.closed }
+        try validateStorage()
+        let result = try operation(database)
+        try validateStorage()
+        return result
     }
 
     private func withStore<T>(_ operation: (CollectorInventoryStore) throws -> T) throws -> T {

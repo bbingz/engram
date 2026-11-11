@@ -87,10 +87,27 @@ public struct ImmutableArchiveCAS: Sendable {
         fileprivate let inode: UInt64
         fileprivate let owner: uid_t
         fileprivate let mode: mode_t
+        fileprivate let isObject: Bool
     }
 
     private let root: URL
     private let testHooks: ImmutableArchiveCASTestHooks
+#if ENGRAM_COLLECTOR_CORE
+    private var collectorObjectAccess: CollectorSpoolGCSession?
+    private var collectorVerificationRead: (@Sendable (String, Int64) throws -> Data)?
+
+    func withCollectorVerificationRead(_ read: @escaping @Sendable (String, Int64) throws -> Data) -> Self {
+        var result = self
+        result.collectorVerificationRead = read
+        return result
+    }
+
+    func withCollectorObjectAccess(_ session: CollectorSpoolGCSession) -> Self {
+        var result = self
+        result.collectorObjectAccess = session
+        return result
+    }
+#endif
 
     // Preserve the caller's path for the snapshot helper's no-follow walk.
     // Foundation standardization may replace /private/var with the /var symlink.
@@ -186,15 +203,24 @@ public struct ImmutableArchiveCAS: Sendable {
     }
 
     public func readObject(sha256: String) throws -> Data {
-        try read(sha256: sha256, kind: .object)
+#if ENGRAM_COLLECTOR_CORE
+        if let collectorVerificationRead { return try collectorVerificationRead(sha256, Int64.max) }
+        try collectorObjectAccess?.prepareRead(sha256)
+#endif
+        return try read(sha256: sha256, kind: .object)
     }
 
     /// Reject oversized files before allocation and bound accumulated bytes if
     /// the file grows while reading. The legacy overload remains unbounded.
     public func readObject(sha256: String, maximumByteCount: Int64) throws -> Data {
-        try read(sha256: sha256, kind: .object, maximumByteCount: maximumByteCount)
+#if ENGRAM_COLLECTOR_CORE
+        if let collectorVerificationRead { return try collectorVerificationRead(sha256, maximumByteCount) }
+        try collectorObjectAccess?.prepareRead(sha256)
+#endif
+        return try read(sha256: sha256, kind: .object, maximumByteCount: maximumByteCount)
     }
 
+#if !ENGRAM_COLLECTOR_CORE
     public func removeObject(sha256: String) throws -> ArchiveRemovalResult {
         try Self.validate(sha256)
         let objectURL = try url(for: sha256, kind: .object, createShard: false)
@@ -226,6 +252,8 @@ public struct ImmutableArchiveCAS: Sendable {
         )
         return .removed(byteCount: Int64(bytes.count))
     }
+
+#endif
 
     public func publishManifest(_ bytes: Data, expectedSHA256: String) throws -> ArchivePublishResult {
         let staged = try stageManifest(bytes, expectedSHA256: expectedSHA256)
@@ -314,7 +342,8 @@ public struct ImmutableArchiveCAS: Sendable {
             device: UInt64(stagedInfo.st_dev),
             inode: UInt64(stagedInfo.st_ino),
             owner: stagedInfo.st_uid,
-            mode: stagedInfo.st_mode
+            mode: stagedInfo.st_mode,
+            isObject: kind == .object
         )
     }
 
@@ -334,6 +363,9 @@ public struct ImmutableArchiveCAS: Sendable {
                 parent,
                 afterFsync: testHooks.afterDirectoryFsync
             )
+#if ENGRAM_COLLECTOR_CORE
+            if staged.isObject { try collectorObjectAccess?.materialized(staged.expectedSHA256) }
+#endif
             return .published
         }
 
@@ -354,6 +386,9 @@ public struct ImmutableArchiveCAS: Sendable {
                 parent,
                 afterFsync: testHooks.afterDirectoryFsync
             )
+#if ENGRAM_COLLECTOR_CORE
+            if staged.isObject { try collectorObjectAccess?.materialized(staged.expectedSHA256) }
+#endif
             return .alreadyPresent
         } catch ImmutableArchiveCASError.digestMismatch(_, let existingActual) {
             throw ImmutableArchiveCASError.existingContentConflict(

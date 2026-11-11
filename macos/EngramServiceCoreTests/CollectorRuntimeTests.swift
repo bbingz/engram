@@ -12,6 +12,57 @@ private typealias Runtime = EngramCollectorCore.CollectorRuntime
 private typealias RuntimeError = EngramCollectorCore.CollectorRuntimeError
 
 final class CollectorRuntimeTests: XCTestCase {
+    func testUntrackedMissingPendingCaptureDoesNotBlockRestartOrOtherRoot_repro() async throws {
+        let f = try RuntimeFixture(); defer { f.remove() }
+        let replicas = try await RuntimeReplicas.start(parent: f.base)
+        var active: Runtime?
+        do {
+            try f.writeTranscript("legacy unavailable capture")
+            try f.writeSettings(f.document(replicas: replicas))
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: { "wrong-" + $0 }))
+            for now: Int64 in 100..<132 {
+                _ = try await active!.runOnce(now: now)
+                if try !f.publications().isEmpty { break }
+            }
+            XCTAssertEqual(try f.publications().count, 1)
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE state='acknowledged'"), 0)
+            try await active!.stop(); active = nil
+            let catalog = try EngramCollectorCore.ArchiveCatalog(root: f.capture, machineID: RuntimeFixture.machineID)
+            let captures = try catalog.unboundCaptures(limit: 8)
+            try catalog.close()
+            let lost = try XCTUnwrap(captures.first)
+            let manifest = try EngramCollectorCore.ArchiveCanonicalJSON.decode(EngramCollectorCore.ArchiveSourceManifest.self, from: lost.unboundManifestBytes)
+            for chunk in manifest.chunks {
+                try FileManager.default.removeItem(at: f.capture.appendingPathComponent("objects/sha256/\(chunk.rawSHA256.prefix(2))/\(chunk.rawSHA256)"))
+            }
+            try FileManager.default.removeItem(at: f.sources.appendingPathComponent("rollout-one.jsonl"))
+            let other = f.base.appendingPathComponent("other-sources")
+            try FileManager.default.createDirectory(at: other, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            try f.writeTranscript("healthy other root", name: "rollout-healthy.jsonl")
+            try FileManager.default.moveItem(at: f.sources.appendingPathComponent("rollout-healthy.jsonl"), to: other.appendingPathComponent("rollout-healthy.jsonl"))
+            var document = f.document(replicas: replicas)
+            var block = try XCTUnwrap(document["collector"] as? [String: Any])
+            var roots = try XCTUnwrap(block["roots"] as? [[String: Any]])
+            roots.append(["rootID": "other-codex", "source": "codex", "rootPath": other.path, "revision": 1])
+            block["roots"] = roots; document["collector"] = block
+            try f.writeSettings(document)
+            active = try XCTUnwrap(Runtime.open(settingsURL: f.settings, secretLoader: f.secret))
+            for now: Int64 in 2000..<2064 {
+                _ = try await active!.runOnce(now: now)
+                if try f.integer("SELECT count(*) FROM collector_publication_replicas r JOIN collector_publications p ON p.publication_digest=r.publication_digest WHERE p.root_id='other-codex' AND r.state='acknowledged'") == 2 { break }
+            }
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas WHERE last_error='localContentUnavailable'"), 2)
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_publication_replicas r JOIN collector_publications p ON p.publication_digest=r.publication_digest WHERE p.root_id='other-codex' AND r.state='acknowledged'"), 2)
+            XCTAssertEqual(try f.integer("SELECT count(*) FROM collector_spool_object_residency"), 0)
+            try await active!.stop(); active = nil
+            await replicas.stop()
+        } catch {
+            try? await active?.stop()
+            await replicas.stop()
+            throw error
+        }
+    }
+
     func testResidentDiscoversNewDirectoryWhileReplicaResponseIsPending() async throws {
         let fixture = try RuntimeFixture()
         defer { fixture.remove() }
