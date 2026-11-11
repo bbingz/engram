@@ -4,6 +4,9 @@
 
 ### 2026-11-11
 
+- [变更] Machines 改为一机一行总览，点名称展开指标/进程/副本/来源表；采样成功与运行状态分开，手机保留关键列、宽明细独立滚动，刷新保留展开与焦点。详见 `CHANGELOG.md`。
+- [验证] Web 393/393、Swift 相关 25/25、脚本 1020 通过/49 条件跳过，类型与桌面/手机深浅主题四组验收通过。仅本地实现，未推送/部署；续接 `feat/web-fleet-table-20261111`，Health 503 与采集缺口未修复。详见 `CHANGELOG.md`。
+
 - [部署] Web「Machines」五机看板已上线：PR #511（`8129554c`）全绿合入，HQ 兼容部署线 Release 为 `d83dcdd1`、receiver PID 61479；独立只读采样每 300 秒更新，已观察到自动周期。旧包和回滚 plist 保留；collector、index、归档进程的 PID/版本均未变化。详见 `CHANGELOG.md` 与 `docs/collector-fleet-dashboard.md`。
 - [验证] 兼容线 Swift 550/550、UI/采样器 388/388；签名、类型、项目生成及线上权限/禁缓存/五机数据、会话筛选/搜索/Insights 验收通过。私有配置与原始观测不入库，未删除/GC、未改保留策略或凭据。完整证据见 `CHANGELOG.md`。
 - [未验证] 原 Health/Overview 链路 `limit=2` 第 19 页出现 503，前 18 页和默认首页正常，根因未定；本次未改该读取实现或重启 index。Machines 独立数据正常，不把此失败显示为健康零值；记录与后续入口见 `CHANGELOG.md`。

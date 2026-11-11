@@ -242,10 +242,10 @@ enum WebUIRoutes {
         </section>
         <section id="fleet-page" hidden aria-labelledby="fleet-heading">
         <div class="page-heading"><h2 id="fleet-heading">Fleet dashboard</h2><button id="fleet-refresh" type="button">Refresh machines</button></div>
-        <p class="meta">Operator observations from each machine. Refreshes every 30 seconds while this page is open. Samples are collected separately; an empty upload queue does not prove all source files were captured.</p>
+        <p class="meta">Sampled telemetry, not a service-health verdict. Refreshes every 30 seconds while open; an empty upload queue does not prove capture completeness.</p>
         <p id="fleet-status" role="status" aria-live="polite"></p>
-        <div id="fleet-summary" class="fleet-summary"></div>
-        <div id="fleet-content" class="fleet-grid"></div>
+        <dl id="fleet-summary" class="fleet-summary"></dl>
+        <div id="fleet-content"></div>
         <p class="health-note">Files, capture generations, ingest tasks, and logical sessions are different units. Cooling files stay dirty until their re-capture window ends. Privacy-withheld files are not upload failures. Tracked-file counts exclude unsupported or untracked files. Session counts are database totals; Web source-admission rules may reduce browse results. Parsed skip-tier sessions and historical quarantine outcomes are not a search backlog.</p>
         </section>
         <section id="health-page" hidden>
@@ -577,19 +577,44 @@ enum WebUIRoutes {
         .page-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
         .page-heading h2 { margin: 0; font-size: 20px; }
         #health-page > p { color: var(--muted); }
-        .fleet-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
-        .fleet-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
-        .fleet-card { min-width: 0; }
-        .fleet-card .health-head { flex-wrap: wrap; gap: 8px; }
-        .fleet-card .fleet-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 24px; }
-        .fleet-card dl { margin: 0; }
-        .fleet-card .fleet-section { margin: 14px 0 6px; font-size: 13px; }
-        .fleet-table-wrap { max-width: 100%; overflow-x: auto; }
+        .fleet-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; padding: 12px 16px; margin: 16px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+        .fleet-summary dt { font-size: 11px; color: var(--muted); }
+        .fleet-summary dd { margin: 4px 0 0; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+        .fleet-table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; }
         .fleet-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
-        .fleet-table th, .fleet-table td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-        .fleet-table th:first-child, .fleet-table td:first-child { text-align: left; white-space: normal; min-width: 100px; }
-        .fleet-card progress { width: 100%; height: 8px; accent-color: var(--accent); }
-        .fleet-card .meta { overflow-wrap: anywhere; }
+        .fleet-table caption { text-align: left; font-size: 13px; font-weight: 600; padding: 12px 0 8px; }
+        .fleet-table th, .fleet-table td { text-align: right; padding: 9px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; vertical-align: top; }
+        .fleet-table th:first-child, .fleet-table td:first-child { text-align: left; white-space: normal; }
+        .fleet-table thead th { color: var(--muted); font-size: 11px; font-weight: 600; white-space: normal; }
+        .fleet-table tbody th { font-weight: 500; }
+        .fleet-overview { table-layout: fixed; }
+        .fleet-overview > thead > tr > th, .fleet-overview > tbody > tr > th, .fleet-overview > tbody > tr > td { white-space: normal; overflow-wrap: anywhere; }
+        .fleet-overview > thead th:first-child { width: 14%; }
+        .fleet-overview > thead th:nth-child(2) { width: 19%; text-align: left; }
+        .fleet-overview .fleet-state { text-align: left; }
+        .fleet-overview .pill { white-space: normal; max-width: 100%; margin: 0 3px 4px 0; }
+        .fleet-machine-row:hover > th, .fleet-machine-row:hover > td { background: var(--panel-2); }
+        .fleet-toggle { text-align: left; padding: 4px 6px; margin-left: -6px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+        .fleet-subline { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+        .fleet-detail-row > td { padding: 0; text-align: left; }
+        .fleet-details { padding: 4px 16px 16px; background: var(--panel); min-width: 0; overflow-wrap: normal; }
+        .fleet-process-table { min-width: 440px; }
+        .fleet-replica-table { min-width: 560px; }
+        .fleet-source-table { min-width: 760px; }
+        .fleet-details .fleet-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 8px 24px; }
+        .fleet-details progress { width: 100%; height: 8px; accent-color: var(--accent); }
+        .fleet-details .meta { overflow-wrap: anywhere; }
+        .fleet-details .attention { color: var(--warn); }
+        @media (max-width: 600px) {
+          .fleet-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .fleet-overview .fleet-secondary { display: none; }
+          .fleet-overview > thead th:first-child { width: 30%; }
+          .fleet-overview > thead th:nth-child(2) { width: 45%; }
+          .fleet-overview > thead th:nth-child(7) { width: 25%; }
+          .fleet-overview > thead > tr > th, .fleet-overview > tbody > tr > th, .fleet-overview > tbody > tr > td { padding: 8px 5px; }
+          .fleet-overview .fleet-detail-row > td { padding: 0; }
+          .fleet-details { padding: 4px 10px 14px; }
+        }
         .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
         .health-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; box-shadow: var(--shadow-1); }
         #usage-content table { font-size: 12px; }
@@ -1041,6 +1066,7 @@ enum WebUIRoutes {
         let requestEpoch = 0;
         let activePage = "sessions";
         let fleetTimer = null, fleetRequest = 0;
+        const fleetExpanded = new Set();
         let searchStatusVersion = 0;
         let sessionPageSizes = [];
         let sessionPage = 0;
@@ -1292,7 +1318,7 @@ enum WebUIRoutes {
           const wasDetail = workspaceNode.classList.contains("showing-detail");
           activatePage(detailReturnPage || (activePage === "search" ? "search" : "sessions"));
           detailReturnPage = null;
-          workspaceNode.className = ["dashboard", "stats"].includes(activePage) ? "data-page" : "";
+          workspaceNode.className = ["dashboard", "stats", "fleet"].includes(activePage) ? "data-page" : "";
           backNode.hidden = true;
           if (wasDetail) {
             window.scrollTo({ top: sessionListScrollTop, behavior: "instant" });
@@ -1323,7 +1349,7 @@ enum WebUIRoutes {
           document.getElementById("library-page").hidden = !["sessions", "search"].includes(activePage);
           document.getElementById("health-page").hidden = activePage !== "health";
           document.getElementById("insights-page").hidden = activePage !== "insights";
-          workspaceNode.classList.toggle("data-page", ["dashboard", "stats"].includes(activePage));
+          workspaceNode.classList.toggle("data-page", ["dashboard", "stats", "fleet"].includes(activePage));
           document.getElementById("dashboard-page").hidden = activePage !== "dashboard";
           document.getElementById("stats-page").hidden = activePage !== "stats";
           document.getElementById("settings-page").hidden = activePage !== "settings";
@@ -3931,6 +3957,7 @@ enum WebUIRoutes {
           }
         }
         function clearFleet() {
+          fleetExpanded.clear();
           fleetRequest += 1;
           if (fleetTimer !== null) clearTimeout(fleetTimer);
           fleetTimer = null;
@@ -3968,7 +3995,7 @@ enum WebUIRoutes {
             renderFleet(data);
           } catch (error) {
             if (!current()) return;
-            setText(content, ""); setText(document.getElementById("fleet-summary"), "");
+            setText(content, ""); setText(document.getElementById("fleet-summary"), ""); fleetExpanded.clear();
             setText(status, error && error.denied ? "Editor access is required to view fleet-wide host metrics." : "Machine observations unavailable. Configure the fleet exporter on the Web host; missing telemetry is not a healthy empty fleet.");
           } finally {
             if (current()) {
@@ -3979,99 +4006,129 @@ enum WebUIRoutes {
         }
         function renderFleet(data) {
           const content = document.getElementById("fleet-content"), summary = document.getElementById("fleet-summary");
+          const focusKey = document.activeElement && document.activeElement.dataset.fleetFocus;
+          let focusAfter = null;
+          function rememberFocus(node, key) { node.dataset.fleetFocus = key; if (focusKey === key) focusAfter = node; }
           setText(content, ""); setText(summary, "");
+          fleetExpanded.forEach(function (id) { if (!data.machines.some(function (m) { return m.id === id; })) fleetExpanded.delete(id); });
           const central = data.central;
           const centralFresh = central && fleetFresh(central.observedAt) && fleetFresh(data.generatedAt);
+          const centralPrefix = central && !centralFresh ? "Stale · " : "";
           const fresh = data.machines.filter(function (m) { return m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt); }).length;
           const sessions = central && Array.isArray(central.machines) ? central.machines.reduce(function (n,m) { return n + m.sessions; }, 0) : null;
-          [["Machines", data.machines.length], ["Fresh observations", fresh], ["Central sessions", sessions], ["FTS pending", central && central.ftsPending], ["FTS permanent failures", central && central.ftsFailed]].forEach(function (entry, index) {
-            const card = document.createElement("div"); card.className = "health-card";
-            const title = document.createElement("h3"); setText(title,entry[0]); card.appendChild(title);
-            const value = document.createElement("p"); setText(value,(index >= 2 && central && !centralFresh ? "Stale · " : "") + fleetCount(entry[1])); card.appendChild(value); summary.appendChild(card);
+          [["Machines", data.machines.length], ["Fresh samples", fresh], ["Central sessions", sessions], ["FTS pending", central && central.ftsPending], ["FTS permanent failures", central && central.ftsFailed]].forEach(function (entry, index) {
+            const stat = document.createElement("div"), title = document.createElement("dt"), value = document.createElement("dd");
+            setText(title,entry[0]); setText(value,(index >= 2 ? centralPrefix : "") + fleetCount(entry[1]));
+            stat.appendChild(title); stat.appendChild(value); summary.appendChild(stat);
           });
           const note = "Snapshot: " + healthTime(data.generatedAt) + (fleetFresh(data.generatedAt) ? "" : " · Stale or clock ahead")
             + " · Central index: " + (central ? healthTime(central.observedAt) + (centralFresh ? "" : " (stale or clock ahead)") : "Not reported");
           setText(document.getElementById("fleet-status"), note);
           if (!data.machines.length) { setText(content,"No machines configured in the fleet exporter."); return; }
-          data.machines.forEach(function (m) {
-            const card = document.createElement("section"); card.className = "health-card fleet-card";
-            const head = document.createElement("div"); head.className = "health-head";
-            const title = document.createElement("h3"); setText(title,m.label); head.appendChild(title);
-            let tone = "neutral", state = "Unknown";
+          function makeTable(title, columns, rows) {
+            const wrap = document.createElement("div"), table = document.createElement("table"), caption = document.createElement("caption");
+            wrap.className = "fleet-table-wrap"; wrap.tabIndex = 0; wrap.setAttribute("role","region"); wrap.setAttribute("aria-label",title);
+            table.className = "fleet-table"; setText(caption,title); table.appendChild(caption);
+            const head = document.createElement("thead"), headings = document.createElement("tr"), body = document.createElement("tbody");
+            columns.forEach(function (text) { const th = document.createElement("th"); th.setAttribute("scope","col"); setText(th,text); headings.appendChild(th); });
+            head.appendChild(headings); table.appendChild(head); table.appendChild(body); wrap.appendChild(table);
+            rows.forEach(function (values) {
+              const row = document.createElement("tr");
+              values.forEach(function (text,index) { const cell = document.createElement(index === 0 ? "th" : "td"); if (index === 0) cell.setAttribute("scope","row"); setText(cell,text); row.appendChild(cell); });
+              body.appendChild(row);
+            });
+            return {wrap:wrap,table:table,body:body,headings:headings};
+          }
+          function line(cell, text) { const span = document.createElement("span"); span.className = "fleet-subline"; setText(span,text); cell.appendChild(span); }
+          const overview = makeTable("Machines · select a name for details", ["Machine", "Services / attention", "Sessions", "Capture (files)", "Upload tasks", "Index tasks", "Free disk", "Observation"], []);
+          overview.table.classList.add("fleet-overview"); rememberFocus(overview.wrap,"overview");
+          const secondary = [2,3,4,5,7]; secondary.forEach(function (i) { overview.headings.children[i].className = "fleet-secondary"; });
+          overview.headings.children[4].title = "Sum of per-replica states, not distinct capture generations";
+          data.machines.forEach(function (m, index) {
             const observed = m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt);
-            const stopped = (m.processes || []).some(function (p) { return p.state === "stopped"; });
-            const badRoots = (m.roots || []).some(function (r) { return r.epochStatus === "mismatch" || r.scanFailed; });
-            const retrying = (m.replicas || []).some(function (r) { return r.failed > 0; });
+            const processes = m.processes || [], replicas = m.replicas || [], roots = m.roots || [];
+            const stopped = processes.some(function (p) { return p.state === "stopped"; });
+            const badRoots = roots.some(function (r) { return r.epochStatus === "mismatch" || r.scanFailed; });
+            const retrying = replicas.some(function (r) { return r.failed > 0; });
             const lowDisk = m.disk && (m.disk.freeBytes < 20 * 1024 * 1024 * 1024 || m.disk.freeBytes / m.disk.totalBytes < 0.1);
-            if (m.status === "unreachable") { tone = "danger"; state = "Unreachable"; }
-            else if (!observed) { tone = "warn"; state = "Stale or clock ahead"; }
-            else if (stopped || badRoots || retrying || lowDisk || (m.errors || []).length) { tone = "warn"; state = "Needs attention"; }
-            else { tone = "ok"; state = "Observed"; }
-            head.appendChild(pill(tone,state));
-            if ((m.roots || []).some(function (r) { return r.captured < r.locators || r.unavailable > 0; })) head.appendChild(pill("warn","Capture gaps"));
-            card.appendChild(head);
-            const identity = document.createElement("p"); identity.className = "meta";
-            setText(identity,m.role + " · sampled " + healthTime(m.observedAt) + " · attempted " + healthTime(m.lastAttemptAt)); card.appendChild(identity);
-            const metrics = document.createElement("div"); metrics.className = "fleet-metrics";
-            function block(title, rows) {
-              const section = document.createElement("div"), heading = document.createElement("h4"), dl = document.createElement("dl");
-              heading.className = "fleet-section"; setText(heading,title); section.appendChild(heading);
-              rows.forEach(function (r) { const dt = document.createElement("dt"), dd = document.createElement("dd"); setText(dt,r[0]); setText(dd,r[1]); dl.appendChild(dt); dl.appendChild(dd); });
-              section.appendChild(dl); metrics.appendChild(section);
-            }
             const c = central && central.machines.find(function (value) { return value.machineId.toLowerCase() === String(m.machineId || "").toLowerCase(); });
-            block("Central sessions", [["Stored sessions",fleetCount(c && c.sessions)], ["Non-hidden, non-skip",fleetCount(c && c.visibleSessions)],
+            const capture = m.capture, row = document.createElement("tr"), detailRow = document.createElement("tr");
+            row.className = "fleet-machine-row"; detailRow.className = "fleet-detail-row"; detailRow.setAttribute("id","fleet-detail-" + index);
+            const name = document.createElement("th"), toggle = document.createElement("button"); name.setAttribute("scope","row");
+            toggle.type = "button"; toggle.className = "fleet-toggle"; toggle.setAttribute("aria-controls","fleet-detail-" + index); rememberFocus(toggle,"toggle:" + m.id);
+            function disclosure() { const open = fleetExpanded.has(m.id); detailRow.hidden = !open; toggle.setAttribute("aria-expanded",String(open)); setText(toggle,(open ? "▾ " : "▸ ") + m.label); }
+            toggle.addEventListener("click",function () { if (fleetExpanded.has(m.id)) fleetExpanded.delete(m.id); else fleetExpanded.add(m.id); disclosure(); });
+            disclosure(); name.appendChild(toggle); line(name,m.role); row.appendChild(name);
+            const cells = [];
+            for (let i = 1; i < 8; i += 1) { const cell = document.createElement("td"); if (secondary.includes(i)) cell.className = "fleet-secondary"; row.appendChild(cell); cells[i] = cell; }
+            const state = cells[1]; state.className = "fleet-state";
+            if (m.status === "unreachable") state.appendChild(pill("danger","Unreachable"));
+            else if (!observed) state.appendChild(pill("warn","Stale or clock ahead"));
+            else if (stopped) state.appendChild(pill("danger","Stopped process"));
+            else if (!processes.length) state.appendChild(pill("neutral","Not reported"));
+            else if (processes.some(function (p) { return p.state !== "running"; })) state.appendChild(pill("neutral","Process unknown"));
+            else state.appendChild(pill("ok","Running"));
+            if (roots.some(function (r) { return r.captured < r.locators || r.unavailable > 0; })) state.appendChild(pill("warn","Capture gaps"));
+            if (badRoots) state.appendChild(pill("warn","Scan / epoch issue"));
+            if (retrying) state.appendChild(pill("warn","Upload retry errors"));
+            if (c && c.retryable > 0) state.appendChild(pill("warn","Index retries"));
+            if (lowDisk) state.appendChild(pill("warn","Low disk"));
+            if ((m.errors || []).length) state.appendChild(pill("warn","Missing observations"));
+            setText(cells[2], c ? centralPrefix + fleetCount(c.sessions) : "Not reported");
+            if (capture) { setText(cells[3],"Captured " + fleetCount(capture.capturedLocators)); line(cells[3],"Dirty " + fleetCount(capture.dirtyLocators) + " · Unavailable " + fleetCount(capture.unavailableLocators)); }
+            else setText(cells[3],"Not reported");
+            if (replicas.length) {
+              const pending = replicas.reduce(function (n,r) { return n + r.pending; },0), inflight = replicas.reduce(function (n,r) { return n + r.inflight; },0);
+              setText(cells[4],"Pending " + fleetCount(pending)); line(cells[4],"In flight " + fleetCount(inflight));
+              if (pending || inflight) state.appendChild(pill("info","Active uploads"));
+            } else setText(cells[4],"Not reported");
+            if (c) { setText(cells[5],centralPrefix + "Pending " + fleetCount(c.pending)); line(cells[5],"Processing " + fleetCount(c.processing)); } else setText(cells[5],"Not reported");
+            setText(cells[6],fleetBytes(m.disk && m.disk.freeBytes));
+            cells[7].appendChild(pill(observed ? "info" : "warn", observed ? "Sampled" : m.status === "unreachable" ? "Unreachable" : "Stale or clock ahead"));
+            line(cells[7],healthAgo(m.observedAt)); cells[7].title = healthTime(m.observedAt);
+            overview.body.appendChild(row);
+            const detailCell = document.createElement("td"), details = document.createElement("div"); detailCell.colSpan = 8; details.className = "fleet-details";
+            const identity = document.createElement("p"); identity.className = "meta";
+            setText(identity,m.label + " · sampled " + healthTime(m.observedAt) + " · attempted " + healthTime(m.lastAttemptAt)); details.appendChild(identity);
+            const metrics = document.createElement("div"); metrics.className = "fleet-metrics";
+            function block(key, title, rows) { const t = makeTable(title,["Metric","Value"],rows); rememberFocus(t.wrap,key + ":" + m.id); metrics.appendChild(t.wrap); }
+            block("central", "Central sessions" + (c && !centralFresh ? " (stale or clock ahead)" : ""), [["Stored sessions",fleetCount(c && c.sessions)], ["Non-hidden, non-skip",fleetCount(c && c.visibleSessions)],
               ["Pending / processing", c ? fleetCount(c.pending) + " / " + fleetCount(c.processing) : "Not reported"],
               ["Parsed / index-ready tasks",c ? fleetCount(c.parsed) + " / " + fleetCount(c.indexReady) : "Not reported"],
               ["Received generations",fleetCount(c && c.publications)],
               ["Retryable / quarantined", c ? fleetCount(c.retryable) + " / " + fleetCount(c.quarantined) : "Not reported"]]);
-            const capture = m.capture;
-            block("Collector", [["Capture generations",fleetCount(capture && capture.publications)], ["Captured files",fleetCount(capture && capture.capturedLocators)],
+            block("collector", "Collector", [["Capture generations",fleetCount(capture && capture.publications)], ["Captured files",fleetCount(capture && capture.capturedLocators)],
               ["Dirty / cooling files",capture ? fleetCount(capture.dirtyLocators) + " / " + fleetCount(capture.coolingLocators) : "Not reported"],
               ["Unavailable files",fleetCount(capture && capture.unavailableLocators)], ["Last capture",healthTime(capture && capture.lastCaptureAt)]]);
-            block("Storage", [["Volume used",m.disk ? fleetBytes(m.disk.totalBytes-m.disk.freeBytes) : "Not reported"],
+            block("storage", "Storage", [["Volume used",m.disk ? fleetBytes(m.disk.totalBytes-m.disk.freeBytes) : "Not reported"],
               ["Volume free",fleetBytes(m.disk && m.disk.freeBytes)], ["Volume capacity",fleetBytes(m.disk && m.disk.totalBytes)]]
               .concat((m.storage || []).map(function (d) { return [d.name,fleetBytes(d.usedBytes) + " · " + healthAgo(d.observedAt)]; })));
-            card.appendChild(metrics);
+            details.appendChild(metrics);
             if (m.disk && m.disk.totalBytes > 0) {
               const progress = document.createElement("progress"); progress.max = m.disk.totalBytes; progress.value = m.disk.totalBytes-m.disk.freeBytes;
-              progress.setAttribute("aria-label", "Volume used on " + m.label); card.appendChild(progress);
-              if (lowDisk) { const warning = document.createElement("p"); warning.className = "attention"; setText(warning,"Low free disk: below 20 GiB or 10% of capacity."); card.appendChild(warning); }
+              progress.setAttribute("aria-label", "Volume used on " + m.label); details.appendChild(progress);
+              if (lowDisk) { const warning = document.createElement("p"); warning.className = "attention"; setText(warning,"Low free disk: below 20 GiB or 10% of capacity."); details.appendChild(warning); }
             }
-            (m.processes || []).forEach(function (p) {
-              const line = document.createElement("p"); line.className = "meta";
-              setText(line,p.name + ": " + p.state + (p.pid != null ? " · PID " + p.pid : "") + (p.revision ? " · " + p.revision.slice(0,8) : "")); card.appendChild(line);
-            });
-            if (!(m.processes || []).length) { const missing = document.createElement("p"); missing.className = "meta"; setText(missing,"Process state: Not reported"); card.appendChild(missing); }
-            (m.replicas || []).forEach(function (r) {
-              const line = document.createElement("p"); line.className = "meta";
-              setText(line,"Replica " + r.id + " · pending " + fleetCount(r.pending) + " · in flight " + fleetCount(r.inflight) + " · ACK " + fleetCount(r.acknowledged) + " · withheld " + fleetCount(r.withheld) + " · retry errors " + fleetCount(r.failed)); card.appendChild(line);
-            });
-            if ((m.errors || []).length) { const error = document.createElement("p"); error.className = "attention"; setText(error,"Missing observations: " + m.errors.join(", ")); card.appendChild(error); }
-            if ((m.roots || []).length) {
-              const details = document.createElement("details"), caption = document.createElement("summary");
-              setText(caption,"Sources & inventory coverage (" + m.roots.length + ")"); details.appendChild(caption);
-              const wrap = document.createElement("div"); wrap.className = "fleet-table-wrap"; wrap.tabIndex = 0;
-              wrap.setAttribute("role","region"); wrap.setAttribute("aria-label", "Source completeness on " + m.label);
-              const table = document.createElement("table"); table.className = "fleet-table";
-              const thead = document.createElement("thead"), tr = document.createElement("tr");
-              ["Source / root", "Tracked files", "Captured", "Dirty", "Cooling", "Unavailable", "Scan", "Epoch"].forEach(function (text) { const th = document.createElement("th"); th.scope = "col"; setText(th,text); tr.appendChild(th); });
-              thead.appendChild(tr); table.appendChild(thead); const body = document.createElement("tbody");
-              m.roots.forEach(function (r) {
-                const row = document.createElement("tr");
-                [sourceLabel(r.source) + " · " + r.id, fleetCount(r.locators),fleetCount(r.captured),fleetCount(r.dirty),fleetCount(r.cooling),fleetCount(r.unavailable),
-                  r.scanFailed ? "Failed" : r.scanning ? "Scanning · lag " + fleetCount(r.scanLag) : r.scanLag ? "Pending · lag " + fleetCount(r.scanLag) : "Complete", r.epochStatus].forEach(function (text) {
-                  const td = document.createElement("td"); setText(td,text); row.appendChild(td);
-                }); body.appendChild(row);
-              });
-              table.appendChild(body); wrap.appendChild(table); details.appendChild(wrap); card.appendChild(details);
+            const processTable = makeTable("Sampled processes", ["Service","State","PID","Revision"], processes.length ? processes.map(function (p) { return [p.name,p.state,Number.isSafeInteger(p.pid) && p.pid > 0 ? String(p.pid) : "Not reported",p.revision ? p.revision.slice(0,8) : "Not reported"]; }) : [["Not reported","Not reported","Not reported","Not reported"]]);
+            processTable.table.classList.add("fleet-process-table"); rememberFocus(processTable.wrap,"processes:" + m.id); details.appendChild(processTable.wrap);
+            const replicaTable = makeTable("Replica publication states", ["Replica","Pending","In flight","ACK","Privacy withheld","Retry errors"], replicas.length ? replicas.map(function (r) { return [r.id,fleetCount(r.pending),fleetCount(r.inflight),fleetCount(r.acknowledged),fleetCount(r.withheld),fleetCount(r.failed)]; }) : [["Not reported","Not reported","Not reported","Not reported","Not reported","Not reported"]]);
+            replicaTable.table.classList.add("fleet-replica-table"); rememberFocus(replicaTable.wrap,"replicas:" + m.id); details.appendChild(replicaTable.wrap);
+            if ((m.errors || []).length) { const error = document.createElement("p"); error.className = "attention"; setText(error,"Missing observations: " + m.errors.join(", ")); details.appendChild(error); }
+            if (roots.length) {
+              const sourceTable = makeTable("Sources & inventory coverage", ["Source / root", "Tracked files", "Captured", "Dirty", "Cooling", "Unavailable", "Scan", "Epoch"], roots.map(function (r) {
+                return [sourceLabel(r.source) + " · " + r.id, fleetCount(r.locators),fleetCount(r.captured),fleetCount(r.dirty),fleetCount(r.cooling),fleetCount(r.unavailable),
+                  r.scanFailed ? "Failed" : r.scanning ? "Scanning · lag " + fleetCount(r.scanLag) : r.scanLag ? "Pending · lag " + fleetCount(r.scanLag) : "Complete", r.epochStatus];
+              }));
+              sourceTable.table.classList.add("fleet-source-table"); rememberFocus(sourceTable.wrap,"sources:" + m.id); details.appendChild(sourceTable.wrap);
             }
             if (m.machineId) {
               const link = document.createElement("a"); link.href = routeHref({page:"sessions",filters:{machine:m.machineId}});
-              setText(link,"Browse this machine’s sessions"); card.appendChild(link);
+              setText(link,"Browse this machine’s sessions"); rememberFocus(link,"browse:" + m.id); details.appendChild(link);
             }
-            content.appendChild(card);
+            detailCell.appendChild(details); detailRow.appendChild(detailCell); overview.body.appendChild(detailRow);
           });
+          content.appendChild(overview.wrap);
+          if (focusAfter) focusAfter.focus({preventScroll:true});
         }
         function countValue(value) {
           const number = Number(value);
