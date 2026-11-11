@@ -15,6 +15,316 @@ final class GrokAdapterTests: XCTestCase {
         if let directory { try FileManager.default.removeItem(at: directory) }
     }
 
+    func testNativeSubagentKindsStaySkipWithoutParentMetadata_repro() async throws {
+        for kind in ["subagent", "subagent_resume", "subagent_fork"] {
+            let root = directory.appendingPathComponent(kind)
+            let locator = try writeNativeSession(root: root, kind: kind)
+            let adapter = GrokAdapter(sessionsRoot: root.path)
+            let info = try await nativeInfo(adapter, locator: locator)
+            XCTAssertEqual(info.agentRole, "subagent", kind)
+            XCTAssertEqual(nativeTier(info), .skip, kind)
+            XCTAssertNil(info.parentSessionId)
+            switch try await adapter.parseSessionInfo(locator: locator) {
+            case .success(let parsed): XCTAssertEqual(parsed, info)
+            case .failure(let failure): throw failure
+            }
+        }
+    }
+
+    func testHeadlessPrimaryAndIncompleteOrConflictingIdentityStayUnknown_repro() async throws {
+        let cases: [(String?, String?, String?)] = [
+            ("headless", "user", "child"),
+            ("headless", "subagent", "child"),
+            (nil, "subagent", "child"),
+            ("subagent", nil, "child"),
+            ("subagent", "user", "child"),
+            ("subagent", "subagent", nil),
+            ("subagent", "subagent", "different-id"),
+            ("future_kind", "subagent", "child"),
+        ]
+        for (index, identity) in cases.enumerated() {
+            let root = directory.appendingPathComponent("unknown-\(index)")
+            let locator = try writeNativeSession(
+                root: root, kind: identity.0, audience: identity.1, summaryID: identity.2
+            )
+            let info = try await nativeInfo(GrokAdapter(sessionsRoot: root.path), locator: locator)
+            XCTAssertNil(info.agentRole, "case \(index)")
+            XCTAssertNil(info.parentSessionId)
+            XCTAssertEqual(nativeTier(info), .normal)
+        }
+    }
+
+    func testNativeIdentityRequiresLayoutConfinedToEnumerationRoot_repro() async throws {
+        let root = directory.appendingPathComponent("sessions")
+        let outside = directory.appendingPathComponent("sessions-other")
+        let outsideLocator = try writeNativeSession(root: outside)
+        let adapter = GrokAdapter(sessionsRoot: root.path)
+        let outsideInfo = try await nativeInfo(adapter, locator: outsideLocator)
+        XCTAssertNil(outsideInfo.agentRole)
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("project"),
+            withDestinationURL: outside.appendingPathComponent("project")
+        )
+        let escapedLocator = root.appendingPathComponent("project/child/chat_history.jsonl").path
+        let escapedInfo = try await nativeInfo(adapter, locator: escapedLocator)
+        XCTAssertNil(escapedInfo.agentRole)
+        let nestedLocator = try writeNativeSession(root: root.appendingPathComponent("nested"))
+        let nestedInfo = try await nativeInfo(adapter, locator: nestedLocator)
+        XCTAssertNil(nestedInfo.agentRole)
+    }
+
+    func testNativeParentRequiresUniqueVerifiedConfinedMeta_repro() async throws {
+        let root = directory.appendingPathComponent("sessions")
+        let locator = try writeNativeSession(root: root)
+        let adapter = GrokAdapter(sessionsRoot: root.path)
+        let meta = try writeNativeParent(root: root, parent: "parent")
+        let linked = try await nativeInfo(adapter, locator: locator)
+        XCTAssertEqual(linked.agentRole, "subagent")
+        XCTAssertEqual(linked.parentSessionId, "parent")
+        XCTAssertEqual(nativeTier(linked), .skip)
+
+        for key in ["parent_session_id", "subagent_id", "child_session_id"] {
+            var object = ["parent_session_id": "parent", "subagent_id": "child", "child_session_id": "child"]
+            object[key] = "wrong"
+            try jsonObject(object).write(to: meta)
+            let info = try await nativeInfo(adapter, locator: locator)
+            XCTAssertNil(info.parentSessionId, key)
+            XCTAssertEqual(nativeTier(info), .skip)
+        }
+        _ = try writeNativeParent(root: root, parent: "parent")
+        let otherMeta = try writeNativeParent(root: root, parent: "other-parent")
+        let ambiguousInfo = try await nativeInfo(adapter, locator: locator)
+        XCTAssertNil(ambiguousInfo.parentSessionId)
+        try FileManager.default.removeItem(at: otherMeta)
+
+        let outside = directory.appendingPathComponent("outside")
+        let outsideMeta = try writeNativeParent(root: outside, parent: "parent")
+        try FileManager.default.removeItem(at: meta)
+        try FileManager.default.createSymbolicLink(at: meta, withDestinationURL: outsideMeta)
+        let escapedParentInfo = try await nativeInfo(adapter, locator: locator)
+        XCTAssertNil(escapedParentInfo.parentSessionId)
+    }
+
+    func testParentMetadataCannotClassifyHeadlessOrUnknownChild_repro() async throws {
+        for kind in ["headless", "unknown"] {
+            let root = directory.appendingPathComponent(kind)
+            let locator = try writeNativeSession(root: root, kind: kind, audience: "user")
+            _ = try writeNativeParent(root: root, parent: "parent")
+            let info = try await nativeInfo(GrokAdapter(sessionsRoot: root.path), locator: locator)
+            XCTAssertNil(info.agentRole)
+            XCTAssertNil(info.parentSessionId)
+            XCTAssertEqual(nativeTier(info), .normal)
+        }
+    }
+
+    func testNativeIdentityRejectsMissingMalformedAndEscapedSidecars_repro() async throws {
+        for name in ["summary.json", "prompt_context.json"] {
+            let root = directory.appendingPathComponent(name)
+            let locator = try writeNativeSession(root: root)
+            let sidecar = URL(fileURLWithPath: locator).deletingLastPathComponent().appendingPathComponent(name)
+            let outside = directory.appendingPathComponent("outside-\(name)")
+            try FileManager.default.copyItem(at: sidecar, to: outside)
+            let adapter = GrokAdapter(sessionsRoot: root.path)
+            try FileManager.default.removeItem(at: sidecar)
+            let missing = try await nativeInfo(adapter, locator: locator)
+            XCTAssertNil(missing.agentRole)
+            try Data("malformed".utf8).write(to: sidecar)
+            let malformed = try await nativeInfo(adapter, locator: locator)
+            XCTAssertNil(malformed.agentRole)
+            try FileManager.default.removeItem(at: sidecar)
+            try FileManager.default.createSymbolicLink(at: sidecar, withDestinationURL: outside)
+            let escaped = try await nativeInfo(adapter, locator: locator)
+            XCTAssertNil(escaped.agentRole)
+        }
+    }
+
+    func testParentMetadataFromAnotherProjectOrRootDoesNotLink_repro() async throws {
+        let root = directory.appendingPathComponent("sessions")
+        let locator = try writeNativeSession(root: root)
+        _ = try writeNativeParent(root: directory.appendingPathComponent("sessions-other"), parent: "parent")
+        _ = try writeNativeParent(root: root.appendingPathComponent("another-project"), parent: "parent")
+        let info = try await nativeInfo(GrokAdapter(sessionsRoot: root.path), locator: locator)
+        XCTAssertEqual(info.agentRole, "subagent")
+        XCTAssertNil(info.parentSessionId)
+    }
+
+    func testCapturedNativeKindsAndIdentityMismatches_repro() throws {
+        let chat = "project/child/chat_history.jsonl"
+        let present = [chat, "project/child/prompt_context.json", "project/child/summary.json"]
+        let cases = [("subagent", "child"), ("subagent_resume", "child"),
+                     ("subagent_fork", "child"), ("subagent", "wrong-id")]
+        for (index, identity) in cases.enumerated() {
+            let root = directory.appendingPathComponent("capture-\(index)")
+            let payloads = try nativePayloads(kind: identity.0, summaryID: identity.1)
+            try writeTree(root: root, payloads: payloads)
+            for logical in ["/missing/project/child/chat_history.jsonl", "/missing/project/wrong/chat_history.jsonl"] {
+                switch try GrokAdapter.scanCapturedSource(
+                    physicalLocator: root.appendingPathComponent(chat).path, logicalLocator: logical,
+                    replayLayout: try fileSetLayout(present: present, payloads: payloads)
+                ) {
+                case .success(let captured):
+                    XCTAssertEqual(captured.scan.info.agentRole,
+                                   identity.1 == "child" && logical.contains("/child/") ? "subagent" : nil)
+                    XCTAssertNil(captured.scan.info.parentSessionId)
+                case .failure(let failure): throw failure
+                }
+            }
+        }
+    }
+
+    func testIndexingIdentityChangesWhenOnlyNativeSidecarChanges_repro() throws {
+        let root = directory.appendingPathComponent("sessions")
+        let locator = try writeNativeSession(root: root)
+        let adapter: any SessionAdapter = GrokAdapter(sessionsRoot: root.path)
+        let sessionDir = URL(fileURLWithPath: locator).deletingLastPathComponent()
+        for name in ["chat_history.jsonl", "summary.json", "prompt_context.json"] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 100)],
+                ofItemAtPath: sessionDir.appendingPathComponent(name).path
+            )
+        }
+        let before = try XCTUnwrap(adapter.indexingInputIdentity(locator: locator))
+        for name in ["summary.json", "prompt_context.json"] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 300)],
+                ofItemAtPath: sessionDir.appendingPathComponent(name).path
+            )
+            let after = try XCTUnwrap(adapter.indexingInputIdentity(locator: locator))
+            XCTAssertNotEqual(before, after, name)
+            XCTAssertEqual(before.locatorInode, after.locatorInode)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 100)],
+                ofItemAtPath: sessionDir.appendingPathComponent(name).path
+            )
+        }
+    }
+
+    func testCapturedNativeIdentityUsesOnlyChildDeclaredFiles_repro() async throws {
+        let root = directory.appendingPathComponent("live")
+        let locator = try writeNativeSession(root: root)
+        _ = try writeNativeParent(root: root, parent: "parent")
+        let local = try await nativeInfo(GrokAdapter(sessionsRoot: root.path), locator: locator)
+        XCTAssertEqual(local.parentSessionId, "parent")
+        let capturedRoot = directory.appendingPathComponent("unrelated-staging")
+        let payloads = try nativePayloads()
+        try writeTree(root: capturedRoot, payloads: payloads)
+        let chat = "project/child/chat_history.jsonl"
+        let summary = "project/child/summary.json"
+        let prompt = "project/child/prompt_context.json"
+        // The live parent remains readable. Replay must never consult it.
+        for present in [[chat, summary, prompt], [chat, summary], [chat, prompt], [chat]] {
+            let layout = try fileSetLayout(present: present, payloads: payloads)
+            switch try GrokAdapter.scanCapturedSource(
+                physicalLocator: capturedRoot.appendingPathComponent(chat).path,
+                logicalLocator: locator, replayLayout: layout
+            ) {
+            case .success(let captured):
+                XCTAssertEqual(captured.scan.info.agentRole, present.count == 3 ? "subagent" : nil)
+                XCTAssertNil(captured.scan.info.parentSessionId)
+                XCTAssertEqual(nativeTier(captured.scan.info), present.count == 3 ? .skip : .normal)
+            case .failure(let failure): throw failure
+            }
+        }
+        // A declared sibling's basename must not authorize the child's decoy metadata.
+        var siblingPayloads = payloads
+        siblingPayloads["project/other/summary.json"] = payloads[summary]
+        switch try GrokAdapter.scanCapturedSource(
+            physicalLocator: capturedRoot.appendingPathComponent(chat).path,
+            logicalLocator: locator,
+            replayLayout: try fileSetLayout(
+                present: [chat, "project/other/summary.json", prompt], payloads: siblingPayloads
+            )
+        ) {
+        case .success(let captured): XCTAssertNil(captured.scan.info.agentRole)
+        case .failure(let failure): throw failure
+        }
+        try FileManager.default.removeItem(at: root)
+        switch try GrokAdapter.scanCapturedSource(
+            physicalLocator: capturedRoot.appendingPathComponent(chat).path,
+            logicalLocator: locator,
+            replayLayout: try fileSetLayout(present: [chat, summary, prompt], payloads: payloads)
+        ) {
+        case .success(let captured):
+            XCTAssertEqual(captured.scan.info.agentRole, "subagent")
+            XCTAssertEqual(nativeTier(captured.scan.info), .skip)
+        case .failure(let failure): throw failure
+        }
+    }
+
+    func testModifiedSinceIncludesNativeIdentitySidecars_repro() async throws {
+        for name in ["summary.json", "prompt_context.json"] {
+            let root = directory.appendingPathComponent(name)
+            let locator = try writeNativeSession(root: root)
+            let old = Date(timeIntervalSince1970: 100)
+            let recent = Date(timeIntervalSince1970: 300)
+            for member in ["chat_history.jsonl", "summary.json", "prompt_context.json"] {
+                try FileManager.default.setAttributes(
+                    [.modificationDate: member == name ? recent : old],
+                    ofItemAtPath: URL(fileURLWithPath: locator).deletingLastPathComponent()
+                        .appendingPathComponent(member).path
+                )
+            }
+            let locators = try await GrokAdapter(sessionsRoot: root.path).listSessionLocators(
+                modifiedSince: Date(timeIntervalSince1970: 200), fileManager: .default
+            )
+            XCTAssertEqual(locators.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+                           [URL(fileURLWithPath: locator).resolvingSymlinksInPath().path], name)
+            let unchanged = try await GrokAdapter(sessionsRoot: root.path).listSessionLocators(
+                modifiedSince: Date(timeIntervalSince1970: 400), fileManager: .default
+            )
+            XCTAssertEqual(unchanged, [])
+        }
+    }
+
+    private func nativeInfo(_ adapter: GrokAdapter, locator: String) async throws -> NormalizedSessionInfo {
+        switch try await adapter.scanForIndexing(locator: locator) {
+        case .success(let scan): return scan.info
+        case .failure(let failure): throw failure
+        }
+    }
+
+    private func nativeTier(_ info: NormalizedSessionInfo) -> SessionTier {
+        SessionTier.compute(TierInput(messageCount: info.messageCount, agentRole: info.agentRole, source: "grok"))
+    }
+
+    private func nativePayloads(
+        kind: String? = "subagent", audience: String? = "subagent", summaryID: String? = "child"
+    ) throws -> [String: Data] {
+        var summary: [String: Any] = ["info": summaryID.map { ["id": $0] } ?? [:]]
+        summary["session_kind"] = kind
+        var context: [String: Any] = ["is_non_interactive": kind == "headless"]
+        context["audience"] = audience
+        return [
+            "project/child/chat_history.jsonl": try jsonl([
+                ["type": "user", "content": "Inspect native identity"],
+                ["type": "assistant", "content": "Inspecting"],
+                ["type": "assistant", "content": "Complete"],
+            ]),
+            "project/child/summary.json": try jsonObject(summary),
+            "project/child/prompt_context.json": try jsonObject(context),
+        ]
+    }
+
+    private func writeNativeSession(
+        root: URL, kind: String? = "subagent", audience: String? = "subagent", summaryID: String? = "child"
+    ) throws -> String {
+        try writeTree(root: root, payloads: nativePayloads(kind: kind, audience: audience, summaryID: summaryID))
+        return root.appendingPathComponent("project/child/chat_history.jsonl").path
+    }
+
+    private func writeNativeParent(root: URL, parent: String) throws -> URL {
+        let relative = "project/\(parent)/subagents/child/meta.json"
+        try writeTree(root: root, payloads: [
+            "project/\(parent)/summary.json": try jsonObject(["info": ["id": parent]]),
+            relative: try jsonObject([
+                "parent_session_id": parent, "subagent_id": "child", "child_session_id": "child",
+            ]),
+        ])
+        return root.appendingPathComponent(relative)
+    }
+
     func testCapturedFileSetReplayMatchesLocalParseAfterOriginalRemoved_repro() async throws {
         let relative = [
             "%2FUsers%2Ftest%2Fproject/019dd6e3-91d1-7326-8299-314858773a0e/chat_history.jsonl",
@@ -481,7 +791,8 @@ final class GrokAdapterTests: XCTestCase {
     ) throws -> ArchiveReplayLayout {
         var offset: Int64 = 0
         var files: [ArchiveFileSetEntry] = []
-        for path in present {
+        let sortedPresent = present.sorted()
+        for path in sortedPresent {
             let bytes = try XCTUnwrap(payloads[path])
             files.append(try ArchiveFileSetEntry(
                 relativePath: path,
@@ -496,7 +807,7 @@ final class GrokAdapterTests: XCTestCase {
         }
         return try ArchiveReplayLayout(
             strategy: .fileSet,
-            relativePaths: present,
+            relativePaths: sortedPresent,
             entrypointRelativePath: present[0],
             files: files,
             absentRelativePaths: absent

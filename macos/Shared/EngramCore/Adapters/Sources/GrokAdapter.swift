@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sendable {
@@ -25,12 +26,39 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
     }
 
     func listSessionLocators(modifiedSince: Date, fileManager: FileManager) async throws -> [String] {
-        try sessionTranscriptLocators(under: sessionsRoot).filter { locator in
-            guard let modifiedAt = try fileManager.attributesOfItem(atPath: locator)[.modificationDate] as? Date else {
-                return false
+        sessionTranscriptLocators(under: sessionsRoot).filter { locator in
+            let sessionDir = Self.sessionDirectory(for: locator)
+            return [URL(fileURLWithPath: locator), sessionDir.appendingPathComponent("summary.json"),
+                    sessionDir.appendingPathComponent("prompt_context.json")].contains { member in
+                guard let attributes = try? fileManager.attributesOfItem(atPath: member.path),
+                      let modifiedAt = attributes[.modificationDate] as? Date else { return false }
+                return modifiedAt >= modifiedSince
             }
-            return modifiedAt >= modifiedSince
         }
+    }
+
+    func indexingInputIdentity(locator: String) -> IndexingInputIdentity? {
+        let sessionDir = Self.sessionDirectory(for: locator)
+        var size: Int64 = 0
+        var newestNanos: Int64 = 0
+        var primary: stat?
+        // Match the existing composite identity convention (Kimi/Copilot):
+        // sidecar-only writes must invalidate the unchanged-file shortcut.
+        let paths = Set([locator, sessionDir.appendingPathComponent("summary.json").path,
+                         sessionDir.appendingPathComponent("prompt_context.json").path])
+        for path in paths {
+            var info = stat()
+            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            size += Int64(info.st_size)
+            newestNanos = max(newestNanos,
+                              Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec))
+            if path == locator { primary = info }
+        }
+        guard let primary else { return nil }
+        return IndexingInputIdentity(
+            sizeBytes: size, modifiedAtNanos: newestNanos,
+            locatorInode: Int64(primary.st_ino), locatorDevice: Int64(primary.st_dev)
+        )
     }
 
     func parseSessionInfo(locator: String) async throws -> AdapterParseResult<NormalizedSessionInfo> {
@@ -41,6 +69,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             sessionDir: Self.sessionDirectory(for: locator),
             infoFilePath: locator,
             allowedMetadata: nil,
+            localSessionsRoot: sessionsRoot,
             limits: limits,
             strictRecords: false
         ) {
@@ -57,6 +86,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             sessionDir: Self.sessionDirectory(for: locator),
             infoFilePath: locator,
             allowedMetadata: nil,
+            localSessionsRoot: sessionsRoot,
             limits: limits,
             strictRecords: false
         ) {
@@ -89,7 +119,13 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             return .failure(.malformedJSON)
         }
         // Present members only. absentRelativePaths must never authorize a read.
-        let present = Set(replayLayout.relativePaths.map { URL(fileURLWithPath: $0).lastPathComponent })
+        let entrypointURL = URL(fileURLWithPath: entrypoint)
+        let entrypointDirectory = entrypointURL.deletingLastPathComponent().path
+        let present = Set(replayLayout.relativePaths.compactMap { relative -> String? in
+            let url = URL(fileURLWithPath: relative)
+            guard url.deletingLastPathComponent().path == entrypointDirectory else { return nil }
+            return url.lastPathComponent
+        })
         guard present.contains(physical.lastPathComponent) else {
             return .failure(.malformedJSON)
         }
@@ -98,6 +134,7 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             sessionDir: physical.deletingLastPathComponent(),
             infoFilePath: logicalLocator,
             allowedMetadata: present,
+            capturedSessionID: Self.capturedSessionID(entrypoint: entrypoint, logicalLocator: logicalLocator),
             declaredRelativePaths: replayLayout.relativePaths,
             limits: .capturedJSONL,
             strictRecords: true,
@@ -142,6 +179,8 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         sessionDir: URL,
         infoFilePath: String,
         allowedMetadata: Set<String>?,
+        localSessionsRoot: URL? = nil,
+        capturedSessionID: String? = nil,
         declaredRelativePaths: [String]? = nil,
         limits: ParserLimits,
         strictRecords: Bool,
@@ -183,6 +222,17 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
             let logicalSessionDir = sessionDirectory(for: infoFilePath)
             let id = JSONLAdapterSupport.string(info?["id"]) ?? logicalSessionDir.lastPathComponent
             guard !id.isEmpty else { return .failure(.malformedJSON) }
+            let localIdentityDirectory = localSessionsRoot.flatMap {
+                Self.validatedSessionDirectory(sessionDir, sessionsRoot: $0)
+            }
+            let identityID = localIdentityDirectory?.lastPathComponent ?? capturedSessionID
+            let isSubagent = Self.isNativeSubagent(
+                summary: summary, promptContext: promptContext,
+                sessionDir: sessionDir, expectedID: identityID
+            )
+            // Captures carry the child's identity files, never the live parent's
+            // subagents metadata. Parent discovery is strictly local and confined.
+            let parentID = isSubagent ? localIdentityDirectory.flatMap(Self.nativeParentSessionID) : nil
 
             let startTime = JSONLAdapterSupport.string(summary?["created_at"])
                 ?? Self.firstTimestamp(in: objects)
@@ -222,7 +272,9 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
                 filePath: infoFilePath,
                 sizeBytes: JSONLAdapterSupport.fileSize(
                     locator: transcriptLocator ?? infoFilePath
-                )
+                ),
+                agentRole: isSubagent ? "subagent" : nil,
+                parentSessionId: parentID
             )
             return .success(
                 CapturedSourceScan(
@@ -237,6 +289,68 @@ final class GrokAdapter: SessionAdapter, ModificationFilteredSessionAdapter, Sen
         } catch {
             return .failure(.malformedJSON)
         }
+    }
+
+    private static func validatedSessionDirectory(_ sessionDir: URL, sessionsRoot: URL) -> URL? {
+        let root = sessionsRoot.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let session = sessionDir.resolvingSymlinksInPath().standardizedFileURL
+        let components = session.pathComponents
+        guard components.count == root.count + 2,
+              Array(components.prefix(root.count)) == root,
+              session.lastPathComponent == sessionDir.lastPathComponent else { return nil }
+        return session
+    }
+
+    private static func capturedSessionID(entrypoint: String, logicalLocator: String) -> String? {
+        let components = entrypoint.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let logicalDirectory = sessionDirectory(for: logicalLocator)
+        guard components.count == 3,
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              components[0] == logicalDirectory.deletingLastPathComponent().lastPathComponent,
+              components[1] == logicalDirectory.lastPathComponent else { return nil }
+        return components[1]
+    }
+
+    private static func isNativeSubagent(
+        summary: JSONLAdapterSupport.JSONObject?,
+        promptContext: JSONLAdapterSupport.JSONObject?,
+        sessionDir: URL,
+        expectedID: String?
+    ) -> Bool {
+        guard let expectedID,
+              JSONLAdapterSupport.string(JSONLAdapterSupport.object(summary?["info"])?["id"]) == expectedID,
+              let kind = JSONLAdapterSupport.string(summary?["session_kind"]),
+              ["subagent", "subagent_resume", "subagent_fork"].contains(kind),
+              JSONLAdapterSupport.string(promptContext?["audience"]) == "subagent" else { return false }
+        // Sidecar symlinks cannot supply identity from outside this session.
+        let physicalDirectory = sessionDir.resolvingSymlinksInPath().standardizedFileURL
+        return ["summary.json", "prompt_context.json"].allSatisfy { name in
+            sessionDir.appendingPathComponent(name).resolvingSymlinksInPath()
+                .deletingLastPathComponent().standardizedFileURL == physicalDirectory
+        }
+    }
+
+    private static func nativeParentSessionID(_ sessionDir: URL) -> String? {
+        let childID = sessionDir.lastPathComponent
+        let projectDir = sessionDir.deletingLastPathComponent()
+        var parents = Set<String>()
+        for parentDir in JSONLAdapterSupport.directChildren(of: projectDir, includingHidden: true) {
+            let parentID = parentDir.lastPathComponent
+            guard parentID != childID,
+                  parentDir.resolvingSymlinksInPath().standardizedFileURL == parentDir.standardizedFileURL else { continue }
+            let metaURL = parentDir.appendingPathComponent("subagents/\(childID)/meta.json")
+            guard metaURL.resolvingSymlinksInPath().standardizedFileURL == metaURL.standardizedFileURL,
+                  let meta = readJSONObject(metaURL),
+                  JSONLAdapterSupport.string(meta["parent_session_id"]) == parentID,
+                  JSONLAdapterSupport.string(meta["subagent_id"]) == childID,
+                  JSONLAdapterSupport.string(meta["child_session_id"]) == childID else { continue }
+            let summaryURL = parentDir.appendingPathComponent("summary.json")
+            guard summaryURL.resolvingSymlinksInPath().standardizedFileURL == summaryURL.standardizedFileURL,
+                  let summary = readJSONObject(summaryURL),
+                  JSONLAdapterSupport.string(JSONLAdapterSupport.object(summary["info"])?["id"]) == parentID else { continue }
+            parents.insert(parentID)
+        }
+        return parents.count == 1 ? parents.first : nil
     }
 
     private static func preferredLocator(in sessionDir: URL) -> String? {

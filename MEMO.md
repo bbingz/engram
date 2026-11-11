@@ -4,6 +4,9 @@
 
 ### 2026-11-11
 
+- [修复] Grok 原生 child/resume/fork 以受限目录、匹配 ID 和 kind/audience 识别为 subagent→skip；本地父链仅接受唯一有效 meta，capture 仅用声明的 child 文件。headless/未知保持原分类；补齐 sidecar 枚举与复合输入身份。详见 `CHANGELOG.md`。
+- [验证] RED→GREEN，Swift focused 53/53；中央只读重计：可见 normal/premium 中确认 4,222 child、1,009 headless、2,925 unknown。仅本地分支修复，未写真实库/回填/重启/推送；中央 CAS 缺口与 Web skip 子项访问留待后续授权，独立评审待 coordinator。详见 `CHANGELOG.md`。
+
 - [部署] Web 1600px 统一页宽与默认简体中文已上线：#515 全绿合入 `d8b7b17f`；HQ 兼容线 `909aef7b`，receiver PID 58762→66658，仅改可执行文件，采样器/其他服务未动，旧包与回滚 plist 保留。详见 `CHANGELOG.md`。
 - [未验证] Health/Overview 分页第 19 页仍 503（3/3 复现，与首次上线时同一位置），本次未改读路径，根因未定。
 - [变更] Web 全页统一 1600px 上限，默认简体中文、可切英文；Cmd/Ctrl+K 移到顶部工具区，手机单行导航可横向滚动。语言只存浏览器，切换前确认刷新，待完成写入/取消/存储失败时不丢草稿。详见 `CHANGELOG.md` 与 `docs/web-interface-localization.md`。
