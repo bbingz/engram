@@ -553,13 +553,19 @@ describe('Web localization and shared shell', () => {
     }
     for (const match of scriptMatch.matchAll(/\bt\("([^"\n]+)"/g))
       expect(Object.hasOwn(catalog, match[1]), match[1]).toBe(true);
+    // PR #515: decode once, as HTML parsing does; never decode the replacement again.
+    const entities: Record<string, string> = {
+      '&amp;': '&',
+      '&#x27;': "'",
+      '&quot;': '"',
+    };
+    const decodeAttribute = (value: string) =>
+      value.replace(/&(?:amp|#x27|quot);/g, (entity) => entities[entity]);
+    expect(decodeAttribute('&amp;quot; &amp;#x27;')).toBe('&quot; &#x27;');
     for (const match of shipped('html').matchAll(
       /data-i18n(?:-title|-placeholder|-aria-label)?="([^"]+)"/g,
     )) {
-      const key = match[1]
-        .replaceAll('&amp;', '&')
-        .replaceAll('&#x27;', "'")
-        .replaceAll('&quot;', '"');
+      const key = decodeAttribute(match[1]);
       expect(Object.hasOwn(catalog, key), key).toBe(true);
     }
   });
