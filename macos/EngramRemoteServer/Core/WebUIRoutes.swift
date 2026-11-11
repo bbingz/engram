@@ -46,6 +46,7 @@ enum WebUIRoutes {
         <a id="nav-dashboard" href="#dashboard">Dashboard</a>
         <a id="nav-stats" href="#stats">Stats</a>
         <a id="nav-health" href="#health">Health</a>
+        <a id="nav-fleet" href="#/fleet">Machines</a>
         <a id="nav-settings" href="#settings">Settings</a>
         </nav>
         <form id="login">
@@ -238,6 +239,14 @@ enum WebUIRoutes {
         <p id="insights-status" role="status" aria-live="polite"></p>
         <div id="insights-rows"></div>
         <button id="insights-more" type="button" hidden>Load more insights</button>
+        </section>
+        <section id="fleet-page" hidden aria-labelledby="fleet-heading">
+        <div class="page-heading"><h2 id="fleet-heading">Fleet dashboard</h2><button id="fleet-refresh" type="button">Refresh machines</button></div>
+        <p class="meta">Operator observations from each machine. Refreshes every 30 seconds while this page is open. Samples are collected separately; an empty upload queue does not prove all source files were captured.</p>
+        <p id="fleet-status" role="status" aria-live="polite"></p>
+        <div id="fleet-summary" class="fleet-summary"></div>
+        <div id="fleet-content" class="fleet-grid"></div>
+        <p class="health-note">Files, capture generations, ingest tasks, and logical sessions are different units. Cooling files stay dirty until their re-capture window ends. Privacy-withheld files are not upload failures. Tracked-file counts exclude unsupported or untracked files. Session counts are database totals; Web source-admission rules may reduce browse results. Parsed skip-tier sessions and historical quarantine outcomes are not a search backlog.</p>
         </section>
         <section id="health-page" hidden>
         <div class="page-heading"><h2>Health</h2><button id="health-refresh" type="button">Refresh</button></div>
@@ -568,6 +577,19 @@ enum WebUIRoutes {
         .page-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
         .page-heading h2 { margin: 0; font-size: 20px; }
         #health-page > p { color: var(--muted); }
+        .fleet-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+        .fleet-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+        .fleet-card { min-width: 0; }
+        .fleet-card .health-head { flex-wrap: wrap; gap: 8px; }
+        .fleet-card .fleet-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 24px; }
+        .fleet-card dl { margin: 0; }
+        .fleet-card .fleet-section { margin: 14px 0 6px; font-size: 13px; }
+        .fleet-table-wrap { max-width: 100%; overflow-x: auto; }
+        .fleet-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+        .fleet-table th, .fleet-table td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+        .fleet-table th:first-child, .fleet-table td:first-child { text-align: left; white-space: normal; min-width: 100px; }
+        .fleet-card progress { width: 100%; height: 8px; accent-color: var(--accent); }
+        .fleet-card .meta { overflow-wrap: anywhere; }
         .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
         .health-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; box-shadow: var(--shadow-1); }
         #usage-content table { font-size: 12px; }
@@ -1018,6 +1040,7 @@ enum WebUIRoutes {
         let rankedCursor = "", rankedSnapshot = "", rankedFilters = "", rankedBusy = false;
         let requestEpoch = 0;
         let activePage = "sessions";
+        let fleetTimer = null, fleetRequest = 0;
         let searchStatusVersion = 0;
         let sessionPageSizes = [];
         let sessionPage = 0;
@@ -1096,6 +1119,7 @@ enum WebUIRoutes {
           stats: ["M4 4v16h16", "M8 16v-5", "M12.5 16V8", "M17 16v-3"],
           insights: ["M4 3h16v18H4z", "M8 8h8", "M8 12h8", "M8 16h5"],
           health: ["M22 12h-4l-3 8-6-16-3 8H2"],
+          fleet: ["M3 3h18v7H3z", "M3 14h18v7H3z", "M7 6h1", "M7 17h1"],
           settings: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1.5 14h5", "M9.5 8h5", "M17.5 16h5"],
           x: ["M18 6L6 18", "M6 6l12 12"],
           check: ["M20 6L9 17l-5-5"],
@@ -1201,7 +1225,7 @@ enum WebUIRoutes {
             setText(healthContent, "");
             setText(healthStatus, "");
             setText(document.getElementById("health-summary"), "");
-            clearDashboard();
+            clearDashboard(); clearFleet();
             overviewStreams = null; overviewObservedAt = null;
             statsChoicesVersion += 1;
             ["source","project"].forEach(function (kind) {
@@ -1292,8 +1316,10 @@ enum WebUIRoutes {
           detailNode.appendChild(empty);
         }
         function activatePage(page) {
+          if (page !== "fleet") clearFleet();
           if (page !== "search" || activePage === "insights") { clearInsights(); clearInsightComposer(); }
-          activePage = ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].includes(page) ? page : "sessions";
+          activePage = ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].includes(page) ? page : "sessions";
+          document.getElementById("fleet-page").hidden = activePage !== "fleet";
           document.getElementById("library-page").hidden = !["sessions", "search"].includes(activePage);
           document.getElementById("health-page").hidden = activePage !== "health";
           document.getElementById("insights-page").hidden = activePage !== "insights";
@@ -1302,7 +1328,7 @@ enum WebUIRoutes {
           document.getElementById("stats-page").hidden = activePage !== "stats";
           document.getElementById("settings-page").hidden = activePage !== "settings";
           document.getElementById("search-options").hidden = activePage !== "search";
-          ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].forEach(function (name) {
+          ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].forEach(function (name) {
             document.getElementById("nav-" + name).setAttribute("aria-current", name === activePage ? "page" : "false");
           });
         }
@@ -1323,6 +1349,8 @@ enum WebUIRoutes {
             await loadInsightsPage(false);
           } else if (activePage === "dashboard") {
             await loadDashboard();
+          } else if (activePage === "fleet") {
+            await loadFleet();
           } else if (activePage === "health") {
             setText(healthContent, "");
             setText(document.getElementById("health-summary"), "");
@@ -1371,7 +1399,7 @@ enum WebUIRoutes {
               return route;
             }
             if (parts[0] === "stats" && parts.length <= 2 && (!parts[1] || statsTabs.includes(parts[1]))) return {page:"stats", tab:parts[1] || "sessions", filters:filters};
-            if (["sessions", "search", "dashboard", "health", "settings", "insights"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
+            if (["sessions", "search", "dashboard", "health", "fleet", "settings", "insights"].includes(parts[0]) && parts.length === 1) return {page:parts[0], filters:filters};
           } catch (error) {}
           return fallback;
         }
@@ -1382,7 +1410,7 @@ enum WebUIRoutes {
             ["group","sources","projects","agents","since","until","noise"].forEach(function (key) { if (route.filters && route.filters[key]) params.set(key,route.filters[key]); });
             return "#/stats/" + (statsTabs.includes(route.tab) ? route.tab : "sessions") + (params.toString() ? "?" + params.toString() : "");
           }
-          const page = ["sessions", "search", "dashboard", "health", "settings", "insights"].includes(route.page) ? route.page : "sessions";
+          const page = ["sessions", "search", "dashboard", "health", "fleet", "settings", "insights"].includes(route.page) ? route.page : "sessions";
           const params = new URLSearchParams();
           if (["sessions", "search"].includes(page)) routeFilterKeys.forEach(function (key) { if (route.filters && route.filters[key]) params.set(key, route.filters[key]); });
           return "#/" + page + (params.toString() ? "?" + params.toString().replaceAll("+", "%20") : "");
@@ -3902,6 +3930,149 @@ enum WebUIRoutes {
             setStatus(items.length ? "Several sessions share this ID. Select the matching session." : "Session not found.");
           }
         }
+        function clearFleet() {
+          fleetRequest += 1;
+          if (fleetTimer !== null) clearTimeout(fleetTimer);
+          fleetTimer = null;
+          ["fleet-content", "fleet-summary", "fleet-status"].forEach(function (id) { setText(document.getElementById(id), ""); });
+          document.getElementById("fleet-content").setAttribute("aria-busy", "false");
+        }
+        function fleetCount(value) { return Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString("en-US") : "Not reported"; }
+        function fleetBytes(value) {
+          if (!Number.isSafeInteger(value) || value < 0) return "Not reported";
+          if (value < 1024) return value + " B";
+          const units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+          let n = value / 1024, i = 0;
+          while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+          return n.toFixed(1) + " " + units[i];
+        }
+        function fleetFresh(value) {
+          return Number.isSafeInteger(value) && Date.now() / 1000 >= value && Date.now() / 1000 - value <= 600;
+        }
+        async function loadFleet() {
+          if (activePage !== "fleet") return;
+          if (fleetTimer !== null) clearTimeout(fleetTimer);
+          fleetTimer = null;
+          const token = requestEpoch, version = ++fleetRequest;
+          const status = document.getElementById("fleet-status"), content = document.getElementById("fleet-content");
+          content.setAttribute("aria-busy", "true"); setText(status, "Loading machine observations…");
+          function current() { return token === requestEpoch && version === fleetRequest && activePage === "fleet"; }
+          try {
+            const response = await fetch("/web/api/fleet", {method:"GET", credentials:"same-origin", headers:headers()});
+            if (!current()) return;
+            if (response.status === 401) { expireSession(); return; }
+            if (!response.ok) throw {denied:response.status === 403};
+            const data = await response.json();
+            if (!current()) return;
+            if (!data || data.schemaVersion !== 1 || !Array.isArray(data.machines) || data.machines.length > 64) throw {};
+            renderFleet(data);
+          } catch (error) {
+            if (!current()) return;
+            setText(content, ""); setText(document.getElementById("fleet-summary"), "");
+            setText(status, error && error.denied ? "Editor access is required to view fleet-wide host metrics." : "Machine observations unavailable. Configure the fleet exporter on the Web host; missing telemetry is not a healthy empty fleet.");
+          } finally {
+            if (current()) {
+              content.setAttribute("aria-busy", "false");
+              fleetTimer = setTimeout(function () { if (activePage === "fleet" && !workspaceNode.hidden) loadFleet().catch(function () {}); }, 30000);
+            }
+          }
+        }
+        function renderFleet(data) {
+          const content = document.getElementById("fleet-content"), summary = document.getElementById("fleet-summary");
+          setText(content, ""); setText(summary, "");
+          const central = data.central;
+          const centralFresh = central && fleetFresh(central.observedAt) && fleetFresh(data.generatedAt);
+          const fresh = data.machines.filter(function (m) { return m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt); }).length;
+          const sessions = central && Array.isArray(central.machines) ? central.machines.reduce(function (n,m) { return n + m.sessions; }, 0) : null;
+          [["Machines", data.machines.length], ["Fresh observations", fresh], ["Central sessions", sessions], ["FTS pending", central && central.ftsPending], ["FTS permanent failures", central && central.ftsFailed]].forEach(function (entry, index) {
+            const card = document.createElement("div"); card.className = "health-card";
+            const title = document.createElement("h3"); setText(title,entry[0]); card.appendChild(title);
+            const value = document.createElement("p"); setText(value,(index >= 2 && central && !centralFresh ? "Stale · " : "") + fleetCount(entry[1])); card.appendChild(value); summary.appendChild(card);
+          });
+          const note = "Snapshot: " + healthTime(data.generatedAt) + (fleetFresh(data.generatedAt) ? "" : " · Stale or clock ahead")
+            + " · Central index: " + (central ? healthTime(central.observedAt) + (centralFresh ? "" : " (stale or clock ahead)") : "Not reported");
+          setText(document.getElementById("fleet-status"), note);
+          if (!data.machines.length) { setText(content,"No machines configured in the fleet exporter."); return; }
+          data.machines.forEach(function (m) {
+            const card = document.createElement("section"); card.className = "health-card fleet-card";
+            const head = document.createElement("div"); head.className = "health-head";
+            const title = document.createElement("h3"); setText(title,m.label); head.appendChild(title);
+            let tone = "neutral", state = "Unknown";
+            const observed = m.status === "ok" && fleetFresh(m.observedAt) && fleetFresh(data.generatedAt);
+            const stopped = (m.processes || []).some(function (p) { return p.state === "stopped"; });
+            const badRoots = (m.roots || []).some(function (r) { return r.epochStatus === "mismatch" || r.scanFailed; });
+            const retrying = (m.replicas || []).some(function (r) { return r.failed > 0; });
+            const lowDisk = m.disk && (m.disk.freeBytes < 20 * 1024 * 1024 * 1024 || m.disk.freeBytes / m.disk.totalBytes < 0.1);
+            if (m.status === "unreachable") { tone = "danger"; state = "Unreachable"; }
+            else if (!observed) { tone = "warn"; state = "Stale or clock ahead"; }
+            else if (stopped || badRoots || retrying || lowDisk || (m.errors || []).length) { tone = "warn"; state = "Needs attention"; }
+            else { tone = "ok"; state = "Observed"; }
+            head.appendChild(pill(tone,state));
+            if ((m.roots || []).some(function (r) { return r.captured < r.locators || r.unavailable > 0; })) head.appendChild(pill("warn","Capture gaps"));
+            card.appendChild(head);
+            const identity = document.createElement("p"); identity.className = "meta";
+            setText(identity,m.role + " · sampled " + healthTime(m.observedAt) + " · attempted " + healthTime(m.lastAttemptAt)); card.appendChild(identity);
+            const metrics = document.createElement("div"); metrics.className = "fleet-metrics";
+            function block(title, rows) {
+              const section = document.createElement("div"), heading = document.createElement("h4"), dl = document.createElement("dl");
+              heading.className = "fleet-section"; setText(heading,title); section.appendChild(heading);
+              rows.forEach(function (r) { const dt = document.createElement("dt"), dd = document.createElement("dd"); setText(dt,r[0]); setText(dd,r[1]); dl.appendChild(dt); dl.appendChild(dd); });
+              section.appendChild(dl); metrics.appendChild(section);
+            }
+            const c = central && central.machines.find(function (value) { return value.machineId.toLowerCase() === String(m.machineId || "").toLowerCase(); });
+            block("Central sessions", [["Stored sessions",fleetCount(c && c.sessions)], ["Non-hidden, non-skip",fleetCount(c && c.visibleSessions)],
+              ["Pending / processing", c ? fleetCount(c.pending) + " / " + fleetCount(c.processing) : "Not reported"],
+              ["Parsed / index-ready tasks",c ? fleetCount(c.parsed) + " / " + fleetCount(c.indexReady) : "Not reported"],
+              ["Received generations",fleetCount(c && c.publications)],
+              ["Retryable / quarantined", c ? fleetCount(c.retryable) + " / " + fleetCount(c.quarantined) : "Not reported"]]);
+            const capture = m.capture;
+            block("Collector", [["Capture generations",fleetCount(capture && capture.publications)], ["Captured files",fleetCount(capture && capture.capturedLocators)],
+              ["Dirty / cooling files",capture ? fleetCount(capture.dirtyLocators) + " / " + fleetCount(capture.coolingLocators) : "Not reported"],
+              ["Unavailable files",fleetCount(capture && capture.unavailableLocators)], ["Last capture",healthTime(capture && capture.lastCaptureAt)]]);
+            block("Storage", [["Volume used",m.disk ? fleetBytes(m.disk.totalBytes-m.disk.freeBytes) : "Not reported"],
+              ["Volume free",fleetBytes(m.disk && m.disk.freeBytes)], ["Volume capacity",fleetBytes(m.disk && m.disk.totalBytes)]]
+              .concat((m.storage || []).map(function (d) { return [d.name,fleetBytes(d.usedBytes) + " · " + healthAgo(d.observedAt)]; })));
+            card.appendChild(metrics);
+            if (m.disk && m.disk.totalBytes > 0) {
+              const progress = document.createElement("progress"); progress.max = m.disk.totalBytes; progress.value = m.disk.totalBytes-m.disk.freeBytes;
+              progress.setAttribute("aria-label", "Volume used on " + m.label); card.appendChild(progress);
+              if (lowDisk) { const warning = document.createElement("p"); warning.className = "attention"; setText(warning,"Low free disk: below 20 GiB or 10% of capacity."); card.appendChild(warning); }
+            }
+            (m.processes || []).forEach(function (p) {
+              const line = document.createElement("p"); line.className = "meta";
+              setText(line,p.name + ": " + p.state + (p.pid != null ? " · PID " + p.pid : "") + (p.revision ? " · " + p.revision.slice(0,8) : "")); card.appendChild(line);
+            });
+            if (!(m.processes || []).length) { const missing = document.createElement("p"); missing.className = "meta"; setText(missing,"Process state: Not reported"); card.appendChild(missing); }
+            (m.replicas || []).forEach(function (r) {
+              const line = document.createElement("p"); line.className = "meta";
+              setText(line,"Replica " + r.id + " · pending " + fleetCount(r.pending) + " · in flight " + fleetCount(r.inflight) + " · ACK " + fleetCount(r.acknowledged) + " · withheld " + fleetCount(r.withheld) + " · retry errors " + fleetCount(r.failed)); card.appendChild(line);
+            });
+            if ((m.errors || []).length) { const error = document.createElement("p"); error.className = "attention"; setText(error,"Missing observations: " + m.errors.join(", ")); card.appendChild(error); }
+            if ((m.roots || []).length) {
+              const details = document.createElement("details"), caption = document.createElement("summary");
+              setText(caption,"Sources & inventory coverage (" + m.roots.length + ")"); details.appendChild(caption);
+              const wrap = document.createElement("div"); wrap.className = "fleet-table-wrap"; wrap.tabIndex = 0;
+              wrap.setAttribute("role","region"); wrap.setAttribute("aria-label", "Source completeness on " + m.label);
+              const table = document.createElement("table"); table.className = "fleet-table";
+              const thead = document.createElement("thead"), tr = document.createElement("tr");
+              ["Source / root", "Tracked files", "Captured", "Dirty", "Cooling", "Unavailable", "Scan", "Epoch"].forEach(function (text) { const th = document.createElement("th"); th.scope = "col"; setText(th,text); tr.appendChild(th); });
+              thead.appendChild(tr); table.appendChild(thead); const body = document.createElement("tbody");
+              m.roots.forEach(function (r) {
+                const row = document.createElement("tr");
+                [sourceLabel(r.source) + " · " + r.id, fleetCount(r.locators),fleetCount(r.captured),fleetCount(r.dirty),fleetCount(r.cooling),fleetCount(r.unavailable),
+                  r.scanFailed ? "Failed" : r.scanning ? "Scanning · lag " + fleetCount(r.scanLag) : r.scanLag ? "Pending · lag " + fleetCount(r.scanLag) : "Complete", r.epochStatus].forEach(function (text) {
+                  const td = document.createElement("td"); setText(td,text); row.appendChild(td);
+                }); body.appendChild(row);
+              });
+              table.appendChild(body); wrap.appendChild(table); details.appendChild(wrap); card.appendChild(details);
+            }
+            if (m.machineId) {
+              const link = document.createElement("a"); link.href = routeHref({page:"sessions",filters:{machine:m.machineId}});
+              setText(link,"Browse this machine’s sessions"); card.appendChild(link);
+            }
+            content.appendChild(card);
+          });
+        }
         function countValue(value) {
           const number = Number(value);
           return number > 0 ? number : 0;
@@ -5494,8 +5665,8 @@ enum WebUIRoutes {
         }
         function availableCommands() {
           if (workspaceNode.hidden) return [];
-          const result = ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].map(function (page) {
-            return {kind:"page", value:page, label:page[0].toUpperCase() + page.slice(1), scope:"Page"};
+          const result = ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].map(function (page) {
+            return {kind:"page", value:page, label:page === "fleet" ? "Machines · Fleet" : page[0].toUpperCase() + page.slice(1), scope:"Page"};
           });
           commandSessions.forEach(function (item) { result.push({kind:"session", value:item.id, label:item.label, scope:"Loaded session"}); });
           if (workspaceNode.classList.contains("showing-detail") && detailContextSession) {
@@ -5681,7 +5852,7 @@ enum WebUIRoutes {
             if (typeof rows[selectedSessionIndex].focus === "function") rows[selectedSessionIndex].focus();
           } else if (event.key === "Enter" && selectedSessionIndex >= 0 && rows[selectedSessionIndex]) { event.preventDefault(); rows[selectedSessionIndex].click(); }
         });
-        ["sessions", "search", "dashboard", "stats", "health", "settings", "insights"].forEach(function (name) {
+        ["sessions", "search", "dashboard", "stats", "health", "fleet", "settings", "insights"].forEach(function (name) {
           const link = document.getElementById("nav-" + name);
           link.setAttribute("href", routeHref({page:name}));
           link.addEventListener("click", function (event) { event.preventDefault(); navigate(name).catch(function () {}); });
@@ -5723,6 +5894,7 @@ enum WebUIRoutes {
         document.getElementById("detail-children-refresh").addEventListener("click", function () { if (!relationshipWritePending) loadDetailChildren(false); });
         document.getElementById("relationship-edit").addEventListener("click", function () { loadRelationshipAccess(); });
         document.getElementById("relationship-form").addEventListener("submit", function (event) { event.preventDefault(); attachDetailChild(); });
+        document.getElementById("fleet-refresh").addEventListener("click", function () { loadFleet().catch(function () {}); });
         document.getElementById("health-refresh").addEventListener("click", function () { navigate("health").catch(function () {}); });
         document.getElementById("alias-form").addEventListener("submit", function (event) { event.preventDefault(); addAlias(); });
         document.getElementById("alias-project-form").addEventListener("submit", function (event) { event.preventDefault(); loadAliasProjects(false); });

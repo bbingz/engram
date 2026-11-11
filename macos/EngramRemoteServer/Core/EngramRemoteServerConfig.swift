@@ -52,6 +52,7 @@ public struct EngramRemoteServerConfig: Sendable {
     public let sourceRevision: String
     public var web: EngramRemoteWebConfig?
     public var webServiceSocketPath: String?
+    public var webFleetStatusPath: String?
 
     public init(
         host: String,
@@ -64,7 +65,8 @@ public struct EngramRemoteServerConfig: Sendable {
         mcp: EngramRemoteMCPConfig? = nil,
         sourceRevision: String = "unknown",
         web: EngramRemoteWebConfig? = nil,
-        webServiceSocketPath: String? = nil
+        webServiceSocketPath: String? = nil,
+        webFleetStatusPath: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -77,6 +79,7 @@ public struct EngramRemoteServerConfig: Sendable {
         self.sourceRevision = Self.validatedSourceRevision(sourceRevision)
         self.web = web
         self.webServiceSocketPath = webServiceSocketPath
+        self.webFleetStatusPath = webFleetStatusPath
     }
 
     public enum ConfigError: Error, CustomStringConvertible {
@@ -289,7 +292,8 @@ public struct EngramRemoteServerConfig: Sendable {
             mcp: mcp,
             sourceRevision: env["ENGRAM_REMOTE_SOURCE_REVISION"] ?? "unknown",
             web: web,
-            webServiceSocketPath: webServiceSocketPath
+            webServiceSocketPath: webServiceSocketPath,
+            webFleetStatusPath: web == nil ? nil : env["ENGRAM_REMOTE_WEB_FLEET_STATUS_PATH"]
         )
     }
 

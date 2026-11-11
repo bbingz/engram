@@ -4,6 +4,9 @@
 
 ### 2026-11-11
 
+- [新增] 已实现 Web「Machines」多机看板：会话、磁盘/目录占用、采集/冷却/扫描、上传/ACK、进程版本与中央索引状态；仅 editor 可读，缺失/过期明确标注。分支 `feat/web-fleet-dashboard-20261111`，尚未 push 或部署；详见 `CHANGELOG.md` 与 `docs/collector-fleet-dashboard.md`。
+- [验证] Swift 543 通过/1 架构跳过，脚本 1012 通过/50 条件跳过；类型、lint、四组桌面/手机深浅主题渲染、五台主机只读采样通过。旧版九轮 Web 升级仍在线（receiver `4b5b3e00`，PID 19042）。新看板上线需另行授权启用独立采样并替换 receiver，继续保留 HQ 兼容部署线；不重启 collector/index。证据和限制见 `CHANGELOG.md`。
+
 - [变更] K6 大文件重采冷却已由 PR #509 合入 main（`b6cfbf9d`，CI 全绿）：上次捕获 ≥8 MiB 的 locator 10 分钟内延期，保留脏版本，到期采最新内容；首次/小文件不延迟，OpenCode/Cursor legacy 保留现有节奏。无删除、GC 或保留策略变更。详见 `CHANGELOG.md` 的 K6 条目。
 - [部署] 四台 collector 已顺序换为 `collector-k6-5c4b9772-20261111`（HQ 部署线 `4b5b3e00` 的后代，不从 main 构建）；校验哈希/签名、停机 epoch dry-run 全为 0、只改二进制路径，旧包与 plist 备份保留。service-index/Web 未动。详见 `CHANGELOG.md`。
 - [验证] 主线 Collector 705/705、Service 相关 219/219；部署线 705/705 和 221/221。真实 Release 隔离 600 秒窗口通过：跨进程保持冷却/脏版本，到期最新 SHA-256 一致；补充 Cursor 伴随文件归一与重启边界测试后相关套件 220/220。macbookpro 9129/9130 已双副本 ACK，原进程未重启，后续持续上传；11:00 中央/FTS 待处理与端到端差额均为 0。精确延迟原因尚未确认，生产减量比例待活跃 Cursor 负载测量。证据与限制见 `CHANGELOG.md`。

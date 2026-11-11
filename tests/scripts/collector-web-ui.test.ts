@@ -496,6 +496,100 @@ function harness(
   };
 }
 
+describe('fleet operations dashboard', () => {
+  const sample = () => ({
+    schemaVersion: 1,
+    generatedAt: Math.floor(Date.now() / 1000),
+    central: null,
+    machines: [
+      {
+        id: 'hq',
+        label: '<HQ>',
+        role: 'index',
+        status: 'ok',
+        machineId: '11111111-2222-3333-4444-555555555555',
+        observedAt: Math.floor(Date.now() / 1000),
+        lastAttemptAt: Math.floor(Date.now() / 1000),
+        processes: [
+          { name: 'Collector', state: 'running', pid: 42, revision: null },
+        ],
+        disk: { totalBytes: 1000, freeBytes: 100 },
+        storage: [],
+        capture: null,
+        roots: [],
+        replicas: [],
+        errors: [],
+      },
+    ],
+  });
+
+  it('loads the Fleet bookmark and preserves unknown metrics instead of reporting zero', async () => {
+    const ui = harness();
+    const pending = ui.call('navigate("fleet")');
+    expect(ui.node('fleet-page').hidden).toBe(false);
+    expect(ui.requests[0].path).toBe('/web/api/fleet');
+    ui.requests[0].resolve(sample());
+    await pending;
+    expect(ui.node('fleet-content').textContent).toContain('<HQ>');
+    expect(ui.node('fleet-content').textContent).toContain('Not reported');
+    expect(ui.node('fleet-content').textContent).not.toContain(
+      'All systems healthy',
+    );
+    expect(ui.node('fleet-summary').textContent).toContain('Not reported');
+    expect(ui.call('parseRoute("#/fleet").page')).toBe('fleet');
+  });
+
+  it('refreshes only while open, cancels on logout, and discards a superseded refresh', async () => {
+    const ui = harness();
+    ui.call('setSignedIn(true);activatePage("fleet")');
+    const old = ui.call('loadFleet()');
+    const latest = ui.call('loadFleet()');
+    ui.requests[1].resolve(sample());
+    await latest;
+    ui.requests[0].resolve({}, 403);
+    await old;
+    expect(ui.node('fleet-content').textContent).toContain('<HQ>');
+    expect(ui.pendingTimers()).toBe(1);
+    ui.runTimers();
+    expect(ui.requests).toHaveLength(3);
+    ui.call('setSignedIn(false)');
+    ui.requests[2].resolve(sample());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(ui.node('fleet-content').textContent).toBe('');
+    expect(ui.pendingTimers()).toBe(0);
+    ui.runTimers();
+    expect(ui.requests).toHaveLength(3);
+  });
+
+  it('marks stale/unreachable samples and never calls old activity a fresh heartbeat', async () => {
+    const ui = harness();
+    const data = sample();
+    data.machines[0].observedAt = 1;
+    ui.call('activatePage("fleet")');
+    const pending = ui.call('loadFleet()');
+    ui.requests[0].resolve(data);
+    await pending;
+    expect(ui.node('fleet-content').textContent).toContain('Stale');
+    expect(ui.node('fleet-content').textContent).not.toContain('Live');
+  });
+
+  it('clears private data on access denial and ignores a response after navigation', async () => {
+    const ui = harness();
+    ui.call('activatePage("fleet")');
+    ui.node('fleet-content').textContent = 'old private host';
+    const pending = ui.call('loadFleet()');
+    ui.requests[0].resolve({}, 403);
+    await pending;
+    expect(ui.node('fleet-content').textContent).toBe('');
+    expect(ui.node('fleet-status').textContent).toContain('Editor');
+    const late = ui.call('loadFleet()');
+    ui.call('activatePage("health")');
+    ui.requests[1].resolve(sample());
+    await late;
+    expect(ui.node('fleet-content').textContent).toBe('');
+  });
+});
+
 describe('fake DOM harness', () => {
   it('supports SVG, CSSOM, tree edits, events, timers and request lookup', async () => {
     const ui = harness();
