@@ -18,6 +18,8 @@ enum CollectorDirtyDeferReason: String, Equatable {
     case sourceMissing
     case rootReplaced
     case unavailable
+    /// K6: a large locator was captured within the re-capture window.
+    case recaptureCooldown
 }
 
 struct CollectorEventIngressBudget {

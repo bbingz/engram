@@ -1738,6 +1738,7 @@ final class CollectorInventoryOwnerTests: XCTestCase {
     func testN4TypedDeferralPersistsOnlyFiniteCodesAndHonorsExactDueBoundary() throws {
         let codes: [(CollectorDirtyDeferReason, String)] = [
             (.sourceMissing, "sourceMissing"), (.rootReplaced, "rootReplaced"), (.unavailable, "unavailable"),
+            (.recaptureCooldown, "recaptureCooldown"),
         ]
         for (reason, code) in codes {
             XCTAssertEqual(reason.rawValue, code)
