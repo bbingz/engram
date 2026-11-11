@@ -203,7 +203,7 @@ struct WebRequestBoundary: Sendable {
                             return boundary.decorate(Response(status: .unauthorized))
                         }
                     }
-                } else if path == "/web/api/migrations" {
+                } else if path == "/web/api/migrations" || path == "/web/api/fleet" {
                     guard request.method == .get else {
                         return boundary.decorate(Response(status: .methodNotAllowed))
                     }

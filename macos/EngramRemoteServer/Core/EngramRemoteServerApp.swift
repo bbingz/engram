@@ -307,6 +307,7 @@ public final class EngramRemoteServerApp: Sendable {
             let boundary = WebRequestBoundary(configuration: configuration)
             WebAuthRoutes.mount(on: router, boundary: boundary, sessions: sessions)
             WebReadRoutes.mount(on: router, surface: surface)
+            WebFleetRoutes.mount(on: router, path: config.webFleetStatusPath)
             WebWriteRoutes.mount(on: router, surface: writeSurface)
             WebUIRoutes.mount(on: router, tailscaleServeIdentity: configuration.usesTailscaleServeIdentity)
             middleware = WebRequestBoundary.Middleware(boundary: boundary, sessions: sessions)

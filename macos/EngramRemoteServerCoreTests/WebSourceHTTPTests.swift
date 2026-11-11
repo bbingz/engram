@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 @testable import EngramRemoteServerCore
 import XCTest
@@ -17,6 +18,44 @@ final class WebSourceHTTPTests: XCTestCase {
 
     override func tearDownWithError() throws {
         if let directory { try FileManager.default.removeItem(at: directory) }
+    }
+
+    func testFleetStatusRequiresEditorAndReportsMissingTelemetry() async throws {
+        try await withServer(read: { throw EngramServiceWebReadClientError.unsupported },
+                             write: SourceRecorder().writeSurface(failOnCall: true)) { server in
+            let anonymous = try await server.request("GET", "/web/api/fleet", headers: Self.headers)
+            XCTAssertEqual(anonymous.status, 401)
+            let viewer = try await Self.login(server, credential: Self.viewer)
+            let denied = try await server.request("GET", "/web/api/fleet", headers: Self.headers + [("Cookie", viewer)])
+            XCTAssertEqual(denied.status, 403, "Fleet-wide host metrics are operator-only, not viewer metadata")
+            let editor = try await Self.login(server, credential: Self.editor)
+            let unavailable = try await server.request("GET", "/web/api/fleet", headers: Self.headers + [("Cookie", editor)])
+            XCTAssertEqual(unavailable.status, 503, "No snapshot must not look like an empty healthy fleet")
+            let mutation = try await server.request("POST", "/web/api/fleet", headers: Self.headers + [("Cookie", editor)])
+            XCTAssertEqual(mutation.status, 405)
+        }
+    }
+
+    func testFleetEditorReadsProjectedPrivateSnapshotAndRejectsQueryAndMalformedFile() async throws {
+        let file = directory.appendingPathComponent("fleet.json")
+        try Data(#"{"schemaVersion":1,"generatedAt":100,"machines":[],"central":null,"internalPath":"/private/not-for-web"}"#.utf8).write(to: file)
+        XCTAssertEqual(chmod(file.path, 0o600), 0)
+        try await withServer(read: { throw EngramServiceWebReadClientError.unsupported },
+                             write: SourceRecorder().writeSurface(failOnCall: true), fleetPath: file.path) { server in
+            let editor = try await Self.login(server, credential: Self.editor)
+            let headers = Self.headers + [("Cookie", editor)]
+            let response = try await server.request("GET", "/web/api/fleet", headers: headers)
+            XCTAssertEqual(response.status, 200)
+            XCTAssertTrue(response.header("cache-control")?.contains("no-store") == true)
+            let snapshot = try JSONDecoder().decode(WebFleetRoutes.Snapshot.self, from: response.body)
+            XCTAssertEqual(snapshot.generatedAt, 100, "an old snapshot must not receive a fresh observation time")
+            XCTAssertFalse(String(decoding: response.body, as: UTF8.self).contains("not-for-web"))
+            let query = try await server.request("GET", "/web/api/fleet?target=elsewhere", headers: headers)
+            XCTAssertEqual(query.status, 400)
+            try Data("malformed".utf8).write(to: file)
+            let bad = try await server.request("GET", "/web/api/fleet", headers: headers)
+            XCTAssertEqual(bad.status, 503)
+        }
     }
 
     func testViewerGetReadsSourcesAndPostIsDenied() async throws {
@@ -71,6 +110,7 @@ final class WebSourceHTTPTests: XCTestCase {
     private func withServer(
         read: @escaping WebReadRoutes.SourceSettingsReader,
         write: WebWriteRoutes.Surface,
+        fleetPath: String? = nil,
         operation: (D4HTTPServer) async throws -> Void
     ) async throws {
         var surface = WebReadRoutes.messagesOnly({ _ in throw EngramServiceWebReadClientError.unavailable })
@@ -83,7 +123,8 @@ final class WebSourceHTTPTests: XCTestCase {
                     origin: Self.origin, viewerCredential: Self.viewer,
                     serverBearerCredentials: ["d5-bearer"], editorCredential: Self.editor
                 ),
-                webServiceSocketPath: directory.appendingPathComponent("service.sock").path
+                webServiceSocketPath: directory.appendingPathComponent("service.sock").path,
+                webFleetStatusPath: fleetPath
             ),
             webReadClientFactory: { _ in surface },
             webWriteClientFactory: { _ in write }

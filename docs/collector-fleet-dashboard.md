@@ -1,0 +1,148 @@
+# Web fleet dashboard
+
+The **Machines** navigation item (`#/fleet`) is an operator dashboard, separate
+from session analytics and the existing ingest Health page. `GET /web/api/fleet`
+requires a Web **editor** session (anonymous: 401; viewer: 403). Fleet-wide counts
+and host capacity are deliberately not ordinary viewer metadata.
+
+## Data flow and guarantees
+
+1. An opt-in operations exporter, `scripts/collector-fleet-status.py`, probes a
+   private allowlist of hosts and state directories outside the Web request path.
+2. It writes one atomic, owner-only JSON observation file. Failed host probes
+   produce an unreachable sample with unknown metrics, not recycled healthy data.
+3. The native Swift Web server securely reads at most 1 MiB from the configured
+   file, validates the typed schema, and serializes only allowlisted DTO fields.
+   It does not return arbitrary operator JSON or probe hosts, walk directories,
+   launch Python, or access collector databases from HTTP handlers.
+4. The browser refreshes every 30 seconds only while Machines is open. Logout,
+   navigation, access denial, and superseded requests cannot repopulate private
+   host data. Observation and snapshot times are shown; samples over 10 minutes
+   old, or ahead of the browser clock, are explicitly marked stale/clock-ahead.
+
+Python 3.9+ is needed only on the operator sampler and its configured probe hosts,
+not by the shipped app, service, collector, or Web server startup. No Python
+package installation is required. SSH uses existing operator authentication and
+host-key policy; no credentials belong in this config or the snapshot.
+
+## Opt-in configuration
+
+Create a regular, owner-only (`0600`) configuration file **outside capture roots**.
+The following paths/hostnames are examples, not defaults or production targets:
+
+```json
+{
+  "machines": [
+    {
+      "id": "collector-a",
+      "label": "Collector A",
+      "role": "collector",
+      "target": "collector-a",
+      "collectorSpool": "/Users/operator/.engram-state/collector/spool",
+      "diskPath": "/Users/operator/.engram-state",
+      "jobs": [{"name": "Collector", "label": "com.engram.collector"}],
+      "storageRoots": [
+        {"name": "Collector spool", "path": "/Users/operator/.engram-state/collector/spool"}
+      ]
+    },
+    {
+      "id": "index",
+      "label": "Central index",
+      "role": "index",
+      "diskPath": "/Users/operator/.engram-state",
+      "jobs": [{"name": "Index", "label": "com.engram.service-index"}],
+      "storageRoots": [
+        {"name": "Index state", "path": "/Users/operator/.engram-state/service-index"}
+      ]
+    }
+  ],
+  "centralDatabase": "/Users/operator/.engram-state/service-index/database/index.sqlite"
+}
+```
+
+Omit `target` for local probing. Roles are `collector`, `index`, and `replica`;
+index hosts can also specify a collector spool. Configure 1–64 distinct machine
+IDs, at most 16 launchd jobs and 16 storage roots per host. Only explicit bounded
+absolute state directories are allowed; do not configure home or volume roots
+for recursive storage measurement. Omitting a component means unknown/not
+reported, not zero or proof that the component is unnecessary.
+
+For a one-shot read-only observation:
+
+```sh
+python3 -I scripts/collector-fleet-status.py \
+  --config /private/operator/fleet-config.json \
+  --output /private/operator/fleet-status.json
+```
+
+For an independently supervised sampler, add `--watch --interval 300` (allowed
+interval: 60–3600 seconds). The output parent must exist, be owned by the operator,
+be canonical/non-symlinked, and not be group/world-writable. Output is atomic
+`0600`; symlink/shared-inode output targets are rejected. Keep this entire state
+location outside source/capture roots. An exporter failure leaves the previous
+file in place; the Web timestamp then ages visibly instead of becoming healthy.
+
+Enable reading in the Web receiver's existing environment:
+
+```text
+ENGRAM_REMOTE_WEB_FLEET_STATUS_PATH=/private/operator/fleet-status.json
+```
+
+The setting is ignored when Web is disabled. Unconfigured, missing, unsafe,
+malformed, oversized, or unsupported snapshots return 503 with no host details;
+viewers are rejected before the file is read. Extra query parameters are rejected.
+No setting creates an SSH capability in the HTTP server.
+
+## Metric semantics
+
+- **Session totals** are central DB rows whose origin identifies a capture machine.
+  **Non-hidden, non-skip** is a narrower SQL count, not a promise of Web admission:
+  source/privacy/authority filters can further reduce browsable sessions. An
+  archive-only host without a capture identity has unknown session counts.
+- **Capture generations** are collector publication records, **captured files**
+  are inventory locators with a prior capture, and **received generations** are
+  central publication records. None of these units is a logical session count.
+- **Dirty** includes cooling locators; do not add cooling again. Unsupported or
+  untracked native files are absent from the inventory. Scan completion and an
+  empty upload/ingest queue do not prove source completeness.
+- **Replica pending/in-flight/ACK** count publication-replica states.
+  Privacy-withheld is reported separately, not as failed or pending upload.
+  Retry errors overlap queue states and must not be added as another backlog.
+- **Central pending/processing/parsed/index-ready/retryable/quarantined** count
+  ingest-ledger tasks, potentially including historical parser runs. Historical
+  quarantine and intentionally skipped sessions are not a current FTS backlog.
+  FTS pending and permanent failures are separately reported.
+- **Disk** is configured-volume used/free/total space. Below 20 GiB or 10% free
+  triggers an attention note, not cleanup or an exhaustion forecast.
+  **Named directory usage** is `du -sk` allocated bytes (including contained state
+  and backups), not logical file bytes or deduplicated APFS-clone consumption.
+  Named directories can overlap; the UI does not sum them into fleet totals.
+- **Processes** show launchd state/PID and the package revision associated with
+  the loaded job's executable, never a possibly edited replacement plist.
+  This is a sampled observation, not a binary-integrity attestation or heartbeat.
+- **Epoch** compares the live FSEvents device UUID with the stored checkpoint;
+  old stderr is not interpreted as current failure. Missing APIs/checkpoints
+  remain unknown/no-checkpoint rather than mismatches.
+
+No collector/native-retention policy, migration, queue, source file, archive,
+credential, or stored generation is changed by this feature. No GC is performed.
+
+## Rollout and rollback
+
+This document does not authorize a service restart, SSH job installation, push,
+or deployment. After deployment approval:
+
+1. Keep the current compatible HQ deploy lineage. Until the live-migration work
+   in #496 lands, build from `4b5b3e00` or its compatible descendants, not main.
+2. Transfer only this feature's commits to that line, regenerate the Xcode project
+   with pinned XcodeGen 2.45.4, and rerun RemoteServerCore and UI/exporter gates.
+3. Create/verify the private snapshot and independently supervised sampler. Check
+   actual schemas, timestamps, five-host reachability, storage scopes, and file
+   permissions before changing the Web receiver environment.
+4. Back up the receiver job, retain its old package, and replace/restart only the
+   receiver. No collector or index restart is needed for this feature. Verify
+   editor 200, viewer 403, secure/no-store response, cold `#/fleet` load, drilldown,
+   stale/offline states, and existing session/search/Health behavior.
+5. Roll back by restoring the receiver's prior job/package and stopping only the
+   new sampler. Retain observations for diagnosis; no database rollback or data
+   deletion is necessary.
