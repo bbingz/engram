@@ -168,7 +168,7 @@ final class CollectorSpoolGCFiles {
     }
 
     func read(_ relative: String, digest: String, bytes: Int64, maximumBytes: Int64) throws -> Data {
-        guard bytes <= maximumBytes, bytes <= Int64(ArchiveV2ProtocolLimits.maxManifestBytes) * 4 else {
+        guard bytes <= maximumBytes, bytes <= Int64(ArchiveV2ProtocolLimits.maxObjectRawBytes) else {
             throw CollectorSpoolGCError.budgetExceeded
         }
         var data = Data()
