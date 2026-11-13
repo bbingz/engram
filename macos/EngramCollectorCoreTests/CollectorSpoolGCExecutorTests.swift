@@ -460,7 +460,7 @@ final class CollectorSpoolGCExecutorTests: XCTestCase {
         f.session!.snapshotDecodeCount = 0
         let applied = try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
         XCTAssertEqual(applied.objects, 8)
-        XCTAssertEqual(f.session!.snapshotDecodeCount, 2, "apply must decode full canonical snapshot only at entry and exit, not 3x per object")
+        XCTAssertEqual(f.session!.snapshotDecodeCount, 1, "apply must decode full canonical snapshot once when DB scope is unchanged")
 
         let later = GCExecutionFixture.clock + 14 * 86400 + 1
         let ready = try f.approval(action: "finalize", runID: approval.runID, now: later)

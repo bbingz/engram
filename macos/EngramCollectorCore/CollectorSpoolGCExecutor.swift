@@ -46,9 +46,14 @@ extension CollectorSpoolGCSession {
         return ArchiveV2Hash.sha256(Data((graph.keep.sorted().joined(separator: "\n") + "\n--manifests--\n" + manifests.joined(separator: "\n")).utf8))
     }
 
-    static func referenceHash(_ digest: String, snapshot: Snapshot) throws -> String {
+    static func referenceHash(_ digest: String, snapshot: Snapshot, publicationsByCapture: [String: [String]]? = nil) throws -> String {
         guard let refs = snapshot.graph?.refs[digest] else { throw CollectorSpoolGCError.scopeChanged }
-        let publications = snapshot.inventory.publications.values.filter { refs.contains($0.captureID) }.map(\.digest).sorted()
+        let publications: [String]
+        if let map = publicationsByCapture {
+            publications = refs.flatMap { map[$0] ?? [] }.sorted()
+        } else {
+            publications = snapshot.inventory.publications.values.filter { refs.contains($0.captureID) }.map(\.digest).sorted()
+        }
         return ArchiveV2Hash.sha256(Data((refs.sorted().joined(separator: "\n") + "\n--publications--\n" + publications.joined(separator: "\n")).utf8))
     }
 
@@ -421,9 +426,8 @@ extension CollectorSpoolGCSession {
         guard let graph = checked.snapshot.graph else { return (0, 0) }
         // Verify every manifest file too, including unselected/unpublished captures.
         for capture in checked.snapshot.catalog.captures.values {
-            let encoded = try ArchiveCanonicalJSON.encode(capture.manifest)
             let relative = "capture/manifests/sha256/\(capture.digest.prefix(2))/\(capture.digest).json"
-            guard try files.verify(relative, digest: capture.digest, bytes: Int64(encoded.count), consume: { try work.charge(Int64($0.count)) }) != nil else {
+            guard try files.verify(relative, digest: capture.digest, bytes: capture.byteCount, consume: { try work.charge(Int64($0.count)) }) != nil else {
                 throw CollectorSpoolGCError.spoolIntegrityBlocked
             }
         }
@@ -471,12 +475,13 @@ extension CollectorSpoolGCSession {
             return try files.read(paths[digest] ?? CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size, maximumBytes: maximum)
         }
         let policy = try checked.config.freshPolicy(at: settingsURL)
+        let pubsByCapture = Dictionary(grouping: state.inventory.publications.values, by: \.captureID)
         for id in captures.sorted() {
             try work.charge()
             guard let capture = try catalog.capture(captureID: id), let value = state.catalog.captures[id] else {
                 throw CollectorSpoolGCError.spoolIntegrityBlocked
             }
-            let publications = state.inventory.publications.values.filter { $0.captureID == id }
+            let publications = pubsByCapture[id] ?? []
             for publication in publications {
                 guard let format = checked.config.rootFormats[publication.root],
                       case .eligible(let proof) = try CollectorPrivacyProof.assess(
@@ -549,6 +554,7 @@ extension CollectorSpoolGCSession {
                     throw CollectorSpoolGCError.budgetExceeded
                 }
                 let bytes = try approval.bytes(), approvalHash = ArchiveV2Hash.sha256(bytes)
+                let pubsByCapture = Dictionary(grouping: checked.snapshot.inventory.publications.values, by: \.captureID).mapValues { $0.map(\.digest) }
                 try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
                 try queue.write { db in
                     try db.execute(sql: """
@@ -563,7 +569,8 @@ extension CollectorSpoolGCSession {
                         try db.execute(sql: """
                             INSERT INTO collector_gc_objects(run_id,digest,raw_bytes,reference_hash,quarantine_path,identity_bytes,state,residency_generation,verified_at)
                             VALUES (?,?,?,?,?,?,'quarantinePrepared',?,?)
-                            """, arguments: [approval.runID, digest, graph.sizes[digest]!, try Self.referenceHash(digest, snapshot: checked.snapshot), path,
+                            """, arguments: [approval.runID, digest, graph.sizes[digest]!,
+                                try Self.referenceHash(digest, snapshot: checked.snapshot, publicationsByCapture: pubsByCapture), path,
                                 try ArchiveCanonicalJSON.encode(identities[digest]!), generation + 1, work.now])
                         try db.execute(sql: """
                             INSERT INTO collector_spool_object_residency(digest,raw_bytes,state,run_id,quarantine_path,evidence_hash,verified_at,generation)
@@ -591,7 +598,7 @@ extension CollectorSpoolGCSession {
                         report.objects += 1
                     }
                     try verifyProtected(queue, checked, approval: approval, work: work)
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
+                    try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
                     report.freeBytesAfter = try files.availableBytes()
                     return report
                 } catch is SimulatedCrash { throw SimulatedCrash() }
