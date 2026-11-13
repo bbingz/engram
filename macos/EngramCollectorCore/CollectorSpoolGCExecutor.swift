@@ -90,15 +90,33 @@ extension CollectorSpoolGCSession {
         return result
     }
 
+    func quarantinedPathsByDigest(_ queue: DatabaseQueue) throws -> [String: String] {
+        try queue.read { db in
+            var qMap: [String: String] = [:]
+            for row in try Row.fetchAll(db, sql: """
+                SELECT digest, quarantine_path FROM collector_spool_object_residency
+                WHERE state='quarantined' AND quarantine_path IS NOT NULL
+                """) {
+                qMap[row["digest"]] = row["quarantine_path"]
+            }
+            return qMap
+        }
+    }
+
     func legacyAbsentProtectedReferenceHash(_ queue: DatabaseQueue, snapshot: Snapshot, work: Work? = nil) throws -> String? {
         guard let graph = snapshot.graph else { return nil }
         let tracked = try trackedDigests(queue)
+        let quarantinedPaths = try quarantinedPathsByDigest(queue)
         var legacy = Data()
         var count = 0
         for digest in graph.keep.sorted() {
             try work?.charge()
             let size = graph.sizes[digest]!
             if try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size, hash: false) != nil {
+                continue
+            }
+            if !graph.admissionKeep.contains(digest), let qPath = quarantinedPaths[digest],
+               try files.verify(qPath, digest: digest, bytes: size, hash: false) != nil {
                 continue
             }
             guard !tracked.contains(digest),
@@ -432,6 +450,7 @@ extension CollectorSpoolGCSession {
             }
         }
         let tracked = try trackedDigests(queue)
+        let quarantinedPaths = try quarantinedPathsByDigest(queue)
         var legacy = Data()
         var legacyObjects = 0
         var legacyBytes: Int64 = 0
@@ -439,6 +458,11 @@ extension CollectorSpoolGCSession {
             let size = graph.sizes[digest]!
             if try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size,
                 consume: { try work.charge(Int64($0.count)) }) != nil {
+                continue
+            }
+            if !graph.admissionKeep.contains(digest), let qPath = quarantinedPaths[digest],
+               try files.verify(qPath, digest: digest, bytes: size,
+                   consume: { try work.charge(Int64($0.count)) }) != nil {
                 continue
             }
             guard !tracked.contains(digest),
