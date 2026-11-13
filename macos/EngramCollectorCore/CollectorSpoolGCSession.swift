@@ -24,6 +24,7 @@ final class CollectorSpoolGCSession: @unchecked Sendable {
 
     // Internal deterministic fault boundary. The CLI never supplies a hook.
     var transitionHook: ((String, String) throws -> Void)?
+    var snapshotDecodeCount = 0
     struct SimulatedCrash: Error {}
 
     init(owner: CollectorInventoryOwner, catalog: ArchiveCatalog, spoolRoot: URL) throws {
@@ -56,6 +57,7 @@ final class CollectorSpoolGCSession: @unchecked Sendable {
     }
 
     func snapshot(_ queue: DatabaseQueue, evidence: CollectorSpoolGCPreview.Evidence? = nil) throws -> Snapshot {
+        snapshotDecodeCount += 1
         let inventory = try queue.read { try CollectorSpoolGCPreview.readInventory($0) }
         let authority = try queue.read { db in
             try CollectorSpoolGCPreview.fingerprint([
@@ -69,6 +71,17 @@ final class CollectorSpoolGCSession: @unchecked Sendable {
         }
         return Snapshot(inventory: inventory, catalog: captures,
             graph: try CollectorSpoolGCPreview.graph(inventory, captures, evidence: evidence), authority: authority)
+    }
+
+    func snapshotHash(_ queue: DatabaseQueue, expectedMachine: String) throws -> String {
+        let inventoryFP = try queue.read { try CollectorSpoolGCPreview.inventoryFingerprint($0, expectedMachine: expectedMachine) }
+        let authority = try queue.read { db in
+            try CollectorSpoolGCPreview.fingerprint([
+                CollectorSpoolGCPreview.rows(db, "collector_streams", order: "root_id,root_revision,effective_source"),
+                CollectorSpoolGCPreview.rows(db, "collector_root_bindings", order: "root_id,root_revision")])
+        }
+        let catalogFP = try catalog.withSpoolGCRead { try CollectorSpoolGCPreview.catalogFingerprint($0, machine: expectedMachine) }
+        return ArchiveV2Hash.sha256(Data((inventoryFP + catalogFP + authority).utf8))
     }
 
     func residencyCount() throws -> Int {

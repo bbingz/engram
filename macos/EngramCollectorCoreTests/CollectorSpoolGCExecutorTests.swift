@@ -406,6 +406,110 @@ final class CollectorSpoolGCExecutorTests: XCTestCase {
             }
         }
     }
+
+    func testApplyAcceptsFullRawChunkSizeObject_repro() throws {
+        let f = try GCExecutionFixture(); defer { f.remove() }
+        let line = "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/allowed\",\"pad\":\"" + String(repeating: "a", count: 8000) + "\"}}\n"
+        let bigOld = GCExecutionFixture.oldText + String(repeating: line, count: 600) // ~4.8 MiB <= 8 MiB maxObjectRawBytes
+        XCTAssertGreaterThan(bigOld.utf8.count, ArchiveV2ProtocolLimits.maxManifestBytes * 4)
+        XCTAssertLessThanOrEqual(bigOld.utf8.count, ArchiveV2ProtocolLimits.maxObjectRawBytes)
+        let root = CollectorRootConfiguration(rootID: "root", source: .codex, rootPath: f.seed.nativeRoot, revision: 1)
+        try Data(GCExecutionFixture.headText.utf8).write(to: URL(fileURLWithPath: f.seed.nativeRoot).appendingPathComponent("stream"))
+        let generation = try CollectorPublicationWorker.sourceGeneration(root: root, relativePath: "stream")
+        try f.seed.add("big-old", bytes: bigOld)
+        try f.seed.add("head", bytes: GCExecutionFixture.headText, latest: true, nativeGeneration: generation)
+        try f.open()
+        let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: CollectorPOSIXDirectoryAccess.components(f.seed.nativeRoot))
+        defer { close(opened.descriptor) }
+        let id = try CollectorPOSIXDirectoryAccess.identity(opened.info)
+        let epoch = try CollectorNativeEventStream.currentEpoch(binding: .init(configuration: root, expectedIdentity: id))
+        try f.owner!.withSpoolGC { queue in
+            try queue.write { db in
+                try db.execute(sql: "UPDATE collector_roots SET event_epoch=?,event_cursor='1'", arguments: [epoch])
+                try db.execute(sql: "INSERT INTO collector_streams(root_id,root_revision,effective_source,source_instance_id,collector_epoch,last_sequence) VALUES ('root',1,'codex',?,?,100000)", arguments: [GCPreviewFixture.instance, GCPreviewFixture.epoch])
+                try db.execute(sql: "INSERT INTO collector_root_bindings(root_id,root_revision,device,inode,generation,birth_seconds,birth_nanoseconds) VALUES ('root',1,?,?,?,?,?)",
+                    arguments: [id.device, id.inode, Int64(id.generation), id.birthSeconds, id.birthNanoseconds])
+                try db.execute(sql: "UPDATE collector_locators SET observed_generation=?", arguments: ["stat-v1:" + String(decoding: try ArchiveCanonicalJSON.encode(generation), as: UTF8.self)])
+            }
+        }
+        let document: [String: Any] = ["runtimeRole": "collector", "collector": [
+            "enabled": true, "shadowRoot": f.seed.root.path, "identityCatalog": f.identity.path,
+            "roots": [["rootID": "root", "source": "codex", "rootPath": f.seed.nativeRoot, "revision": 1]],
+            "replicas": ["hq", "m1"].map { ["serverID": $0, "baseURL": "https://\($0).invalid", "credentialID": "\($0)-test"] },
+            "privacy": ["revision": 1, "excludedProjectRoots": []],
+            "budgets": ["maxEntriesVisited":2,"maxCandidateFiles":2,"maxDirectoryOpens":1,"maxMetadataBytes":8192,
+                "maxCaptureFiles":2,"maxCaptureBytes":16_777_216,"maxUploadClaimsPerReplica":2,"maxRecoveryCandidates":8,
+                "maxResponseBytes":4096,"minimumFreeDiskBytes":0,"maxIncomingPaths":64,"maxPathUTF8Bytes":4096,
+                "maxTotalPathUTF8Bytes":32768,"maxCheckpointUTF8Bytes":512,"maxQueuedBatches":16,
+                "maxQueuedUTF8Bytes":65536,"pollIntervalMilliseconds":50]]]
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: f.settings)
+        XCTAssertEqual(chmod(f.settings.path, 0o600), 0)
+        let approval = try f.approval(maxBytes: 16_777_216)
+        let report = try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
+        XCTAssertEqual(report.objects, 1)
+    }
+
+    func testBatchRecheckAvoidsPerObjectSnapshotDecoding_repro() throws {
+        let f = try GCExecutionFixture(); defer { f.remove() }
+        for index in 0..<7 {
+            let line = GCExecutionFixture.oldText + "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/allowed\",\"seq\":\(index)}}\n"
+            try f.seed.add("old-\(index)", bytes: line)
+        }
+        try f.prepare()
+        let approval = try f.approval(maxBytes: 1_048_576, maxObjects: 128)
+        f.session!.snapshotDecodeCount = 0
+        let applied = try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
+        XCTAssertEqual(applied.objects, 8)
+        XCTAssertEqual(f.session!.snapshotDecodeCount, 2, "apply must decode full canonical snapshot only at entry and exit, not 3x per object")
+
+        let later = GCExecutionFixture.clock + 14 * 86400 + 1
+        let ready = try f.approval(action: "finalize", runID: approval.runID, now: later)
+        f.session!.snapshotDecodeCount = 0
+        let finalized = try f.session!.finalize(approval: ready, settingsURL: f.settings, now: later)
+        XCTAssertEqual(finalized.objects, 8)
+        XCTAssertEqual(f.session!.snapshotDecodeCount, 1, "finalize must decode full canonical snapshot once when DB scope is unchanged")
+    }
+
+    func testMidBatchDatabaseAndCatalogDriftRestoresAndBlocksUnlink_repro() throws {
+        for (phase, target) in [("apply", "inventory"), ("apply", "catalog"), ("finalize", "inventory"), ("finalize", "catalog")] {
+            let f = try GCExecutionFixture(); defer { f.remove() }
+            try f.prepare()
+            let approval = try f.approval()
+            let invPath = f.seed.root.appendingPathComponent("inventory/inventory.sqlite").path
+            let catPath = f.seed.root.appendingPathComponent("capture/archive.sqlite").path
+            let injectDrift: () throws -> Void = {
+                if target == "inventory" {
+                    let ext = try DatabaseQueue(path: invPath)
+                    try ext.write { try $0.execute(sql: "UPDATE collector_streams SET last_sequence=last_sequence+1") }
+                    try ext.close()
+                } else {
+                    let ext = try DatabaseQueue(path: catPath)
+                    try ext.write { try $0.execute(sql: "UPDATE archive_captures SET diagnostic='drift'") }
+                    try ext.close()
+                }
+            }
+            if phase == "apply" {
+                f.session!.transitionHook = { event, _ in
+                    if event == "afterRename" { try injectDrift() }
+                }
+                XCTAssertThrowsError(try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock), "\(phase)-\(target)") {
+                    XCTAssertEqual($0 as? CollectorSpoolGCError, .scopeChanged)
+                }
+                XCTAssertEqual(try Data(contentsOf: f.seed.object(GCExecutionFixture.oldText)), Data(GCExecutionFixture.oldText.utf8), "\(phase)-\(target)")
+            } else {
+                try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
+                let later = GCExecutionFixture.clock + 14 * 86400 + 1
+                let ready = try f.approval(action: "finalize", runID: approval.runID, now: later)
+                f.session!.transitionHook = { event, _ in
+                    if event == "unlinkPrepared" { try injectDrift() }
+                }
+                XCTAssertThrowsError(try f.session!.finalize(approval: ready, settingsURL: f.settings, now: later), "\(phase)-\(target)") {
+                    XCTAssertEqual($0 as? CollectorSpoolGCError, .scopeChanged)
+                }
+                XCTAssertEqual(try Data(contentsOf: f.seed.object(GCExecutionFixture.oldText)), Data(GCExecutionFixture.oldText.utf8), "\(phase)-\(target)")
+            }
+        }
+    }
 }
 
 extension GCExecutionFixture {
