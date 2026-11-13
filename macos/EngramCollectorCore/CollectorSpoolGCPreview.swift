@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import GRDB
@@ -87,6 +88,7 @@ public enum CollectorSpoolGCPreview {
     struct Capture {
         let manifest: ArchiveSourceManifest
         let digest: String
+        let byteCount: Int64
         let status: String
     }
     struct Catalog {
@@ -168,9 +170,9 @@ public enum CollectorSpoolGCPreview {
     }
 
     static func fingerprint(_ groups: [[Row]]) throws -> String {
-        var data = Data()
+        var hasher = SHA256(), totalBytes = 0
         for group in groups {
-            data.append(Data("\(group.count):".utf8))
+            hasher.update(data: Data("\(group.count):".utf8))
             for row in group {
                 for (_, v) in row {
                     let bytes: Data
@@ -181,12 +183,14 @@ public enum CollectorSpoolGCPreview {
                     case .string(let x): bytes = Data("s".utf8) + Data(x.utf8)
                     case .blob(let x): bytes = Data("b".utf8) + x
                     }
-                    guard data.count <= maximumMetadataBytes - bytes.count else { throw Failure.resourceLimit }
-                    data.append(Data("\(bytes.count):".utf8)); data.append(bytes)
+                    guard totalBytes <= maximumMetadataBytes - bytes.count else { throw Failure.resourceLimit }
+                    totalBytes += bytes.count
+                    hasher.update(data: Data("\(bytes.count):".utf8))
+                    hasher.update(data: bytes)
                 }
             }
         }
-        return ArchiveV2Hash.sha256(data)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func readInventory(_ url: URL) throws -> Inventory {
@@ -279,7 +283,7 @@ public enum CollectorSpoolGCPreview {
                 }
                 references += manifest.chunks.count
                 guard references <= maximumReferences else { throw Failure.resourceLimit }
-                captures[manifest.captureID] = Capture(manifest: manifest, digest: digest, status: try value(row, "status"))
+                captures[manifest.captureID] = Capture(manifest: manifest, digest: digest, byteCount: Int64(bytes.count), status: try value(row, "status"))
             }
             return Catalog(captures: captures, fingerprint: try fingerprint([raw]))
     }
