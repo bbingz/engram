@@ -736,6 +736,76 @@ final class CollectorSpoolGCExecutorTests: XCTestCase {
         let fin1 = try f.approval(action: "finalize", runID: batch1.runID, now: finalize1Time, maxBytes: 16_777_216, selectedDigests: [digestA])
         XCTAssertEqual(try f.session!.finalize(approval: fin1, settingsURL: f.settings, now: finalize1Time).objects, 1)
     }
+
+    func testQuarantinedNonAdmissionKeepObjectOnDirtyLocatorDoesNotBlockOtherLocatorGC_repro() throws {
+        let f = try GCExecutionFixture(); defer { f.remove() }
+        let root = CollectorRootConfiguration(rootID: "root", source: .codex, rootPath: f.seed.nativeRoot, revision: 1)
+        let oldA = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"loc-a\",\"cwd\":\"/allowed\"}}\n"
+        let headA = oldA + "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/allowed\",\"a\":1}}\n"
+        let oldB = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"loc-b\",\"cwd\":\"/allowed\"}}\n"
+        let headB = oldB + "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/allowed\",\"b\":1}}\n"
+        try Data(headA.utf8).write(to: URL(fileURLWithPath: f.seed.nativeRoot).appendingPathComponent("stream-a"))
+        try Data(headB.utf8).write(to: URL(fileURLWithPath: f.seed.nativeRoot).appendingPathComponent("stream-b"))
+        let genA = try CollectorPublicationWorker.sourceGeneration(root: root, relativePath: "stream-a")
+        let genB = try CollectorPublicationWorker.sourceGeneration(root: root, relativePath: "stream-b")
+        try f.seed.add("old-a", bytes: oldA, locatorPath: "stream-a")
+        try f.seed.add("head-a", bytes: headA, latest: true, nativeGeneration: genA, locatorPath: "stream-a")
+        try f.seed.add("old-b", bytes: oldB, locatorPath: "stream-b")
+        try f.seed.add("head-b", bytes: headB, latest: true, nativeGeneration: genB, locatorPath: "stream-b")
+        try f.open()
+        let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: CollectorPOSIXDirectoryAccess.components(f.seed.nativeRoot))
+        defer { close(opened.descriptor) }
+        let id = try CollectorPOSIXDirectoryAccess.identity(opened.info)
+        let epoch = try CollectorNativeEventStream.currentEpoch(binding: .init(configuration: root, expectedIdentity: id))
+        try f.owner!.withSpoolGC { queue in
+            try queue.write { db in
+                try db.execute(sql: "UPDATE collector_roots SET event_epoch=?,event_cursor='1'", arguments: [epoch])
+                try db.execute(sql: "INSERT INTO collector_streams(root_id,root_revision,effective_source,source_instance_id,collector_epoch,last_sequence) VALUES ('root',1,'codex',?,?,100000)", arguments: [GCPreviewFixture.instance, GCPreviewFixture.epoch])
+                try db.execute(sql: "INSERT INTO collector_root_bindings(root_id,root_revision,device,inode,generation,birth_seconds,birth_nanoseconds) VALUES ('root',1,?,?,?,?,?)",
+                    arguments: [id.device, id.inode, Int64(id.generation), id.birthSeconds, id.birthNanoseconds])
+                try db.execute(sql: "UPDATE collector_locators SET observed_generation=? WHERE relative_path='stream-a'",
+                    arguments: ["stat-v1:" + String(decoding: try ArchiveCanonicalJSON.encode(genA), as: UTF8.self)])
+                try db.execute(sql: "UPDATE collector_locators SET observed_generation=? WHERE relative_path='stream-b'",
+                    arguments: ["stat-v1:" + String(decoding: try ArchiveCanonicalJSON.encode(genB), as: UTF8.self)])
+            }
+        }
+        let document: [String: Any] = ["runtimeRole": "collector", "collector": [
+            "enabled": true, "shadowRoot": f.seed.root.path, "identityCatalog": f.identity.path,
+            "roots": [["rootID": "root", "source": "codex", "rootPath": f.seed.nativeRoot, "revision": 1]],
+            "replicas": ["hq", "m1"].map { ["serverID": $0, "baseURL": "https://\($0).invalid", "credentialID": "\($0)-test"] },
+            "privacy": ["revision": 1, "excludedProjectRoots": []],
+            "budgets": ["maxEntriesVisited":2,"maxCandidateFiles":2,"maxDirectoryOpens":1,"maxMetadataBytes":8192,
+                "maxCaptureFiles":2,"maxCaptureBytes":1048576,"maxUploadClaimsPerReplica":2,"maxRecoveryCandidates":8,
+                "maxResponseBytes":4096,"minimumFreeDiskBytes":0,"maxIncomingPaths":64,"maxPathUTF8Bytes":4096,
+                "maxTotalPathUTF8Bytes":32768,"maxCheckpointUTF8Bytes":512,"maxQueuedBatches":16,
+                "maxQueuedUTF8Bytes":65536,"pollIntervalMilliseconds":50]]]
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: f.settings)
+        XCTAssertEqual(chmod(f.settings.path, 0o600), 0)
+
+        let digestOldA = ArchiveV2Hash.sha256(Data(oldA.utf8))
+        let digestOldB = ArchiveV2Hash.sha256(Data(oldB.utf8))
+        let batch1 = try f.approval(selectedDigests: [digestOldA])
+        XCTAssertEqual(try f.session!.apply(approval: batch1, settingsURL: f.settings, now: GCExecutionFixture.clock).objects, 1)
+
+        // Live write marks stream-a dirty_k6, placing already-quarantined digestOldA into graph.keep (but not admissionKeep).
+        try f.owner!.withSpoolGC { queue in
+            try queue.write { try $0.execute(sql: "UPDATE collector_locators SET dirty_revision = acknowledged_revision + 1 WHERE relative_path='stream-a'") }
+        }
+        let batch2 = try f.approval(now: GCExecutionFixture.clock + 10, selectedDigests: [digestOldB])
+        XCTAssertEqual(try f.session!.apply(approval: batch2, settingsURL: f.settings, now: GCExecutionFixture.clock + 10).objects, 1)
+
+        // Missing quarantined bytes on disk for that protected object must still fail closed.
+        let qPathA = try CollectorSpoolGCFiles.quarantine(digestOldA, runID: batch1.runID)
+        try FileManager.default.removeItem(at: f.seed.root.appendingPathComponent(qPathA))
+        let fin2Time = GCExecutionFixture.clock + 14 * 86400 + 20
+        XCTAssertThrowsError(try f.approval(action: "finalize", runID: batch2.runID, now: fin2Time, bindLegacyAbsent: true, selectedDigests: [digestOldB])) {
+            XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+        }
+        let fin2 = try f.approval(action: "finalize", runID: batch2.runID, now: fin2Time, selectedDigests: [digestOldB])
+        XCTAssertThrowsError(try f.session!.finalize(approval: fin2, settingsURL: f.settings, now: fin2Time)) {
+            XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+        }
+    }
 }
 
 extension GCExecutionFixture {
