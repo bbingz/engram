@@ -448,6 +448,68 @@ final class CollectorSpoolGCExecutorTests: XCTestCase {
         let report = try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
         XCTAssertEqual(report.objects, 1)
     }
+
+    func testBatchRecheckAvoidsPerObjectSnapshotDecoding_repro() throws {
+        let f = try GCExecutionFixture(); defer { f.remove() }
+        for index in 0..<7 {
+            let line = GCExecutionFixture.oldText + "{\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/allowed\",\"seq\":\(index)}}\n"
+            try f.seed.add("old-\(index)", bytes: line)
+        }
+        try f.prepare()
+        let approval = try f.approval(maxBytes: 1_048_576, maxObjects: 128)
+        f.session!.snapshotDecodeCount = 0
+        let applied = try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
+        XCTAssertEqual(applied.objects, 8)
+        XCTAssertEqual(f.session!.snapshotDecodeCount, 2, "apply must decode full canonical snapshot only at entry and exit, not 3x per object")
+
+        let later = GCExecutionFixture.clock + 14 * 86400 + 1
+        let ready = try f.approval(action: "finalize", runID: approval.runID, now: later)
+        f.session!.snapshotDecodeCount = 0
+        let finalized = try f.session!.finalize(approval: ready, settingsURL: f.settings, now: later)
+        XCTAssertEqual(finalized.objects, 8)
+        XCTAssertEqual(f.session!.snapshotDecodeCount, 1, "finalize must decode full canonical snapshot once when DB scope is unchanged")
+    }
+
+    func testMidBatchDatabaseAndCatalogDriftRestoresAndBlocksUnlink_repro() throws {
+        for (phase, target) in [("apply", "inventory"), ("apply", "catalog"), ("finalize", "inventory"), ("finalize", "catalog")] {
+            let f = try GCExecutionFixture(); defer { f.remove() }
+            try f.prepare()
+            let approval = try f.approval()
+            let invPath = f.seed.root.appendingPathComponent("inventory/inventory.sqlite").path
+            let catPath = f.seed.root.appendingPathComponent("capture/archive.sqlite").path
+            let injectDrift: () throws -> Void = {
+                if target == "inventory" {
+                    let ext = try DatabaseQueue(path: invPath)
+                    try ext.write { try $0.execute(sql: "UPDATE collector_streams SET last_sequence=last_sequence+1") }
+                    try ext.close()
+                } else {
+                    let ext = try DatabaseQueue(path: catPath)
+                    try ext.write { try $0.execute(sql: "UPDATE archive_captures SET diagnostic='drift'") }
+                    try ext.close()
+                }
+            }
+            if phase == "apply" {
+                f.session!.transitionHook = { event, _ in
+                    if event == "afterRename" { try injectDrift() }
+                }
+                XCTAssertThrowsError(try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock), "\(phase)-\(target)") {
+                    XCTAssertEqual($0 as? CollectorSpoolGCError, .scopeChanged)
+                }
+                XCTAssertEqual(try Data(contentsOf: f.seed.object(GCExecutionFixture.oldText)), Data(GCExecutionFixture.oldText.utf8), "\(phase)-\(target)")
+            } else {
+                try f.session!.apply(approval: approval, settingsURL: f.settings, now: GCExecutionFixture.clock)
+                let later = GCExecutionFixture.clock + 14 * 86400 + 1
+                let ready = try f.approval(action: "finalize", runID: approval.runID, now: later)
+                f.session!.transitionHook = { event, _ in
+                    if event == "unlinkPrepared" { try injectDrift() }
+                }
+                XCTAssertThrowsError(try f.session!.finalize(approval: ready, settingsURL: f.settings, now: later), "\(phase)-\(target)") {
+                    XCTAssertEqual($0 as? CollectorSpoolGCError, .scopeChanged)
+                }
+                XCTAssertEqual(try Data(contentsOf: f.seed.object(GCExecutionFixture.oldText)), Data(GCExecutionFixture.oldText.utf8), "\(phase)-\(target)")
+            }
+        }
+    }
 }
 
 extension GCExecutionFixture {

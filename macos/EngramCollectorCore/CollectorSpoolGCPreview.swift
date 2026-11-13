@@ -193,6 +193,25 @@ public enum CollectorSpoolGCPreview {
         try CollectorMachineIdentityReader.withReadOnlyDatabase(from: url) { try readInventory($0) }
     }
 
+    static func inventoryFingerprint(_ db: Database, expectedMachine: String) throws -> String {
+        let metadata = try rows(db, "collector_metadata", order: "key")
+        let values = try Dictionary(uniqueKeysWithValues: metadata.map { (try value($0, "key", as: String.self), try value($0, "value", as: String.self)) })
+        guard values["schema_version"] == "2", values["publication_schema_version"] == "11",
+              values["machine_id"] == expectedMachine else { throw Failure.unsupportedSchema }
+        let roots = try rows(db, "collector_roots", order: "root_id")
+        let locators = try rows(db, "collector_locators", order: "root_id,root_revision,relative_path")
+        let pubs = try rows(db, "collector_publications", order: "publication_digest")
+        let replicas = try rows(db, "collector_publication_replicas", order: "publication_digest,replica_id")
+        let reservations = try rows(db, "collector_capture_reservations", order: "id")
+        return try fingerprint([metadata.filter { ($0["key"] as String) != "active_owner_run_id" && ($0["key"] as String) != "gc_schema_version" }, roots, locators, pubs, replicas, reservations])
+    }
+
+    static func catalogFingerprint(_ db: Database, machine: String) throws -> String {
+        guard try String.fetchOne(db, sql: "SELECT value FROM archive_metadata WHERE key='machine_id'") == machine,
+              try String.fetchOne(db, sql: "SELECT value FROM archive_metadata WHERE key='schema_version'") == "5" else { throw Failure.unsupportedSchema }
+        return try fingerprint([rows(db, "archive_captures", order: "capture_id")])
+    }
+
     static func readInventory(_ db: Database) throws -> Inventory {
             let metadata = try rows(db, "collector_metadata", order: "key")
             let values = try Dictionary(uniqueKeysWithValues: metadata.map { (try value($0, "key", as: String.self), try value($0, "value", as: String.self)) })

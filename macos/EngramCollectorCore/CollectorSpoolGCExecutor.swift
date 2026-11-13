@@ -62,21 +62,37 @@ extension CollectorSpoolGCSession {
     /// projected mappings stay blocked; no native recapture grants GC authority.
     func nativeHash(_ queue: DatabaseQueue, snapshot: Snapshot, config: CollectorRuntimeConfiguration,
                     captures: Set<String>) throws -> String {
+        struct StreamKey: Hashable { let root: String; let revision: Int64; let source: String }
+        struct RootRevKey: Hashable { let root: String; let revision: Int64 }
         let publications = snapshot.inventory.publications.values.filter { captures.contains($0.captureID) }
+        let (streams, bindings) = try queue.read { db -> ([StreamKey: (String, String)], [RootRevKey: Row]) in
+            var sMap: [StreamKey: (String, String)] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT root_id,root_revision,effective_source,source_instance_id,collector_epoch FROM collector_streams") {
+                sMap[StreamKey(root: row["root_id"], revision: row["root_revision"], source: row["effective_source"])] =
+                    (row["source_instance_id"], row["collector_epoch"])
+            }
+            var bMap: [RootRevKey: Row] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT * FROM collector_root_bindings") {
+                bMap[RootRevKey(root: row["root_id"], revision: row["root_revision"])] = row
+            }
+            return (sMap, bMap)
+        }
         for publication in publications {
             guard let source = snapshot.catalog.captures[publication.captureID]?.manifest.source,
-                  let stream = try queue.read({ try Row.fetchOne($0, sql: "SELECT source_instance_id,collector_epoch FROM collector_streams WHERE root_id=? AND root_revision=? AND effective_source=?", arguments: [publication.root, publication.revision, source]) }),
-                  (stream["source_instance_id"] as String) == publication.envelope.sourceInstanceID,
-                  (stream["collector_epoch"] as String) == publication.envelope.collectorEpoch else { throw CollectorSpoolGCError.scopeChanged }
+                  let stream = streams[StreamKey(root: publication.root, revision: publication.revision, source: source)],
+                  stream.0 == publication.envelope.sourceInstanceID,
+                  stream.1 == publication.envelope.collectorEpoch else { throw CollectorSpoolGCError.scopeChanged }
         }
         let keys = Set(publications.map { CollectorSpoolGCPreview.LocatorKey(root: $0.root, revision: $0.revision, path: $0.path) })
         var evidence = Data()
+        var rootEpochs: [RootRevKey: String] = [:]
         for key in keys.sorted(by: { ($0.root, $0.revision, $0.path) < ($1.root, $1.revision, $1.path) }) {
+            let rootKey = RootRevKey(root: key.root, revision: key.revision)
             guard let root = config.rootConfigurations.first(where: { $0.rootID == key.root && $0.revision == key.revision }),
                   let locator = snapshot.inventory.locators[key], let headID: String = locator["last_capture_id"],
                   let head = snapshot.catalog.captures[headID],
                   head.manifest.locator == root.rootPath + "/" + key.path,
-                  let binding = try queue.read({ try Row.fetchOne($0, sql: "SELECT * FROM collector_root_bindings WHERE root_id=? AND root_revision=?", arguments: [key.root, key.revision]) }) else {
+                  let binding = bindings[rootKey] else {
                 throw CollectorSpoolGCError.scopeChanged
             }
             let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: CollectorPOSIXDirectoryAccess.components(root.rootPath))
@@ -85,7 +101,13 @@ extension CollectorSpoolGCSession {
             guard identity.device == (binding["device"] as Int64), identity.inode == (binding["inode"] as Int64),
                   Int64(identity.generation) == (binding["generation"] as Int64), identity.birthSeconds == (binding["birth_seconds"] as Int64),
                   identity.birthNanoseconds == (binding["birth_nanoseconds"] as Int64) else { throw CollectorSpoolGCError.scopeChanged }
-            let nativeEpoch = try CollectorNativeEventStream.currentEpoch(binding: .init(configuration: root, expectedIdentity: identity))
+            let nativeEpoch: String
+            if let cached = rootEpochs[rootKey] {
+                nativeEpoch = cached
+            } else {
+                nativeEpoch = try CollectorNativeEventStream.currentEpoch(binding: .init(configuration: root, expectedIdentity: identity))
+                rootEpochs[rootKey] = nativeEpoch
+            }
             guard let storedRoot = snapshot.inventory.roots[key.root],
                   let storedEpoch: String = storedRoot["event_epoch"], storedEpoch == nativeEpoch else { throw CollectorSpoolGCError.scopeChanged }
             evidence.append(Data((nativeEpoch + "\n").utf8))
@@ -174,6 +196,140 @@ extension CollectorSpoolGCSession {
               graph.keep.isSubset(of: Set(approval.escrow.objects)),
               protectedManifests.isSubset(of: Set(approval.escrow.manifests)) else { throw CollectorSpoolGCError.escrowMissing }
         return Checked(snapshot: current, config: config, captures: captures, candidates: candidates)
+    }
+
+    final class ScopeWatch: TransactionObserver {
+        private static let gcTables: Set<String> = [
+            "collector_gc_runs", "collector_gc_objects", "collector_spool_object_residency",
+        ]
+        private let catalogURL: URL
+        private var inventoryVersions: (Int64, Int64)?
+        private var catalogStamp: Data?
+        private var nonGCTableMutated = false
+
+        init(catalogURL: URL) { self.catalogURL = catalogURL }
+
+        func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
+            !Self.gcTables.contains(eventKind.tableName)
+        }
+        func databaseDidChange(with event: DatabaseEvent) { nonGCTableMutated = true }
+        func databaseDidCommit(_ db: Database) {}
+        func databaseDidRollback(_ db: Database) {}
+
+        private static func versions(_ db: Database) throws -> (Int64, Int64) {
+            guard let data = try Int64.fetchOne(db, sql: "PRAGMA data_version"),
+                  let schema = try Int64.fetchOne(db, sql: "PRAGMA schema_version") else {
+                throw CollectorSpoolGCError.scopeChanged
+            }
+            return (data, schema)
+        }
+
+        /// Capture main SQLite header (change counter) plus WAL header/size and
+        /// the two 48-byte WalIndexHdr writer regions in SHM (excluding reader
+        /// marks at >=96). Any commit by any writer mutates this stamp.
+        private func readCatalogStamp() throws -> Data {
+            var dirInfo = stat()
+            let dirPath = catalogURL.deletingLastPathComponent().path
+            guard lstat(dirPath, &dirInfo) == 0,
+                  (dirInfo.st_mode & S_IFMT) == S_IFDIR, dirInfo.st_uid == geteuid(),
+                  (dirInfo.st_mode & 0o077) == 0 else { throw CollectorSpoolGCError.scopeChanged }
+            var stamp = Data()
+            for (suffix, headerBytes, required) in [("", 100, true), ("-wal", 32, false), ("-shm", 96, false)] {
+                let path = catalogURL.path + suffix
+                var before = stat()
+                if lstat(path, &before) != 0 {
+                    if !required, errno == ENOENT { stamp.append(Data("absent:\(suffix)\n".utf8)); continue }
+                    throw CollectorSpoolGCError.scopeChanged
+                }
+                guard (before.st_mode & S_IFMT) == S_IFREG, before.st_uid == geteuid(),
+                      before.st_nlink == 1, (before.st_mode & 0o077) == 0 else {
+                    throw CollectorSpoolGCError.scopeChanged
+                }
+                let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard fd >= 0 else { throw CollectorSpoolGCError.scopeChanged }
+                defer { _ = Darwin.close(fd) }
+                var opened = stat()
+                guard fstat(fd, &opened) == 0, opened.st_dev == before.st_dev, opened.st_ino == before.st_ino,
+                      (opened.st_mode & S_IFMT) == S_IFREG, opened.st_uid == geteuid(),
+                      opened.st_nlink == 1, (opened.st_mode & 0o077) == 0 else {
+                    throw CollectorSpoolGCError.scopeChanged
+                }
+                var buf = [UInt8](repeating: 0, count: headerBytes)
+                let n = buf.withUnsafeMutableBytes { pread(fd, $0.baseAddress, $0.count, 0) }
+                guard n >= 0 else { throw CollectorSpoolGCError.scopeChanged }
+                stamp.append(Data("\(suffix):\(opened.st_dev):\(opened.st_ino):\(opened.st_size):\(n):".utf8))
+                stamp.append(contentsOf: buf.prefix(n))
+            }
+            return stamp
+        }
+
+        func checkWithBaseline(_ session: CollectorSpoolGCSession, queue: DatabaseQueue, approval: CollectorSpoolGCApproval,
+                               settingsURL: URL, work: Work) throws -> Checked {
+            nonGCTableMutated = false
+            let invBefore = try queue.read { try Self.versions($0) }
+            let catBefore = try readCatalogStamp()
+            let checked = try session.check(queue, approval: approval, settingsURL: settingsURL, work: work)
+            let invAfter = try queue.read { try Self.versions($0) }
+            let catAfter = try readCatalogStamp()
+            guard !nonGCTableMutated, invBefore == invAfter, catBefore == catAfter else {
+                throw CollectorSpoolGCError.scopeChanged
+            }
+            inventoryVersions = invAfter
+            catalogStamp = catAfter
+            return checked
+        }
+
+        func verifyUnchanged(_ session: CollectorSpoolGCSession, queue: DatabaseQueue, expectedHash: String, expectedMachine: String) throws {
+            guard let expectedInv = inventoryVersions, let expectedCat = catalogStamp else {
+                throw CollectorSpoolGCError.scopeChanged
+            }
+            let currentInv = try queue.read { try Self.versions($0) }
+            let currentCat = try readCatalogStamp()
+            if !nonGCTableMutated, currentInv == expectedInv, currentCat == expectedCat {
+                return
+            }
+            let recomputed: String
+            do { recomputed = try session.snapshotHash(queue, expectedMachine: expectedMachine) }
+            catch { throw CollectorSpoolGCError.scopeChanged }
+            guard recomputed == expectedHash else {
+                throw CollectorSpoolGCError.scopeChanged
+            }
+        }
+    }
+
+    func withScopeWatch<T>(_ queue: DatabaseQueue, _ body: (ScopeWatch) throws -> T) throws -> T {
+        let canonicalRoot = try CollectorMachineIdentityReader.canonicalExistingPath(spoolRoot)
+        let watch = ScopeWatch(catalogURL: URL(fileURLWithPath: canonicalRoot).appendingPathComponent("capture/archive.sqlite"))
+        queue.add(transactionObserver: watch)
+        defer { queue.remove(transactionObserver: watch) }
+        return try body(watch)
+    }
+
+    /// Re-verify every mutable boundary (time/freshness, settings/policy/identity,
+    /// DB scope via ScopeWatch + cryptographic fallback, and live native heads)
+    /// without re-decoding unchanged canonical publication/manifest blobs on every step.
+    func recheck(_ queue: DatabaseQueue, watch: ScopeWatch, checked: Checked, approval: CollectorSpoolGCApproval,
+                 settingsURL: URL, work: Work) throws {
+        try work.charge(); try approval.validateTime(now: work.now)
+        let config = try configuration(settingsURL)
+        guard approval.spoolIdentity == files.scopeIdentity,
+              try CollectorMachineIdentityReader.read(from: config.identityURL) == approval.machineID,
+              approval.configurationSHA256 == ArchiveV2Hash.sha256(config.authorityBytes),
+              try approval.policySHA256 == config.freshPolicy(at: settingsURL).sha256() else { throw CollectorSpoolGCError.scopeChanged }
+        try watch.verifyUnchanged(self, queue: queue, expectedHash: approval.scopeSHA256, expectedMachine: approval.machineID)
+        for replica in approval.replicas {
+            guard config.replicas.contains(where: { $0.serverID == replica.serverID && $0.baseURL == replica.endpoint }) else {
+                throw CollectorSpoolGCError.proofMissing
+            }
+        }
+        if checked.snapshot.graph != nil {
+            do {
+                guard try nativeHash(queue, snapshot: checked.snapshot, config: config, captures: checked.captures) == approval.nativeSHA256 else {
+                    throw CollectorSpoolGCError.scopeChanged
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { throw CollectorSpoolGCError.scopeChanged }
+        }
     }
 
     func measure(_ queue: DatabaseQueue, checked: Checked, report: inout ExecutionReport, work: Work) throws {
@@ -270,83 +426,85 @@ extension CollectorSpoolGCSession {
         guard approval.action == "apply" else { throw CollectorSpoolGCError.invalidEvidence }
         let work = Work(now: now)
         return try owner.withSpoolGC { queue in
-            let checked = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-            var report = ExecutionReport(runID: approval.runID, action: "quarantine")
-            guard let graph = checked.snapshot.graph else { return report }
-            try measure(queue, checked: checked, report: &report, work: work)
-            guard try queue.read({ try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_gc_runs WHERE run_id=?", arguments: [approval.runID]) }) == 0 else {
-                throw CollectorSpoolGCError.scopeChanged
-            }
-            try verifyProtected(checked, work: work)
-            var selected: [String] = [], identities: [String: CollectorSpoolGCFiles.Identity] = [:]
-            for digest in checked.candidates {
-                try work.charge()
-                let size = graph.sizes[digest]!
-                guard selected.count < approval.maxObjects, size <= approval.maxBytes - report.uniqueRawBytes else { continue }
-                guard let identity = try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size,
-                    consume: { try work.charge(Int64($0.count)) }) else { continue }
-                if let row = try queue.read({ try CollectorSpoolGCJournal.residency($0, digest) }), (row["state"] as String) != "resident" {
+            try withScopeWatch(queue) { watch in
+                let checked = try watch.checkWithBaseline(self, queue: queue, approval: approval, settingsURL: settingsURL, work: work)
+                var report = ExecutionReport(runID: approval.runID, action: "quarantine")
+                guard let graph = checked.snapshot.graph else { return report }
+                try measure(queue, checked: checked, report: &report, work: work)
+                guard try queue.read({ try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_gc_runs WHERE run_id=?", arguments: [approval.runID]) }) == 0 else {
                     throw CollectorSpoolGCError.scopeChanged
                 }
-                selected.append(digest); identities[digest] = identity
-                report.uniqueRawBytes += size; report.allocatedBytesObserved += identity.allocatedBytes
-            }
-            guard !selected.isEmpty else { return report }
-            try verifyProof(queue, approval, checked: checked, digests: selected, paths: [:], settingsURL: settingsURL, work: work)
-            report.freeBytesBefore = try files.availableBytes()
-            guard report.freeBytesBefore >= max(64 * 1024 * 1024, checked.config.budgets.minimumFreeDiskBytes) else {
-                throw CollectorSpoolGCError.budgetExceeded
-            }
-            let bytes = try approval.bytes(), approvalHash = ArchiveV2Hash.sha256(bytes)
-            _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-            try queue.write { db in
-                try db.execute(sql: """
-                    INSERT INTO collector_gc_runs(run_id,machine_id,scope_hash,approval_hash,evidence_bytes,state,created_at,hold_until,max_bytes,max_objects,reserved_bytes,reserved_objects)
-                    VALUES (?,?,?,?,?,'prepared',?,?,?,?,?,?)
-                    """, arguments: [approval.runID, approval.machineID, approval.scopeSHA256, approvalHash, bytes,
-                        work.now, work.now + approval.holdSeconds, approval.maxBytes, approval.maxObjects, report.uniqueRawBytes, selected.count])
-                for digest in selected {
-                    let generation = try CollectorSpoolGCJournal.residency(db, digest).map { ($0["generation"] as Int64) } ?? 0
-                    guard generation < Int64.max else { throw CollectorSpoolGCError.budgetExceeded }
-                    let path = try CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID)
-                    try db.execute(sql: """
-                        INSERT INTO collector_gc_objects(run_id,digest,raw_bytes,reference_hash,quarantine_path,identity_bytes,state,residency_generation,verified_at)
-                        VALUES (?,?,?,?,?,?,'quarantinePrepared',?,?)
-                        """, arguments: [approval.runID, digest, graph.sizes[digest]!, try Self.referenceHash(digest, snapshot: checked.snapshot), path,
-                            try ArchiveCanonicalJSON.encode(identities[digest]!), generation + 1, work.now])
-                    try db.execute(sql: """
-                        INSERT INTO collector_spool_object_residency(digest,raw_bytes,state,run_id,quarantine_path,evidence_hash,verified_at,generation)
-                        VALUES (?,?,'quarantinePrepared',?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
-                        raw_bytes=excluded.raw_bytes,state=excluded.state,run_id=excluded.run_id,quarantine_path=excluded.quarantine_path,
-                        evidence_hash=excluded.evidence_hash,verified_at=excluded.verified_at,generation=excluded.generation
-                        """, arguments: [digest, graph.sizes[digest]!, approval.runID, path, approvalHash, work.now, generation + 1])
-                }
-            }
-            do {
-                try transitionHook?("reserved", "")
-                for digest in selected {
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                    try transitionHook?("beforeRename", digest)
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                    try files.move(CollectorSpoolGCFiles.resident(digest), to: CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID), digest: digest, expected: identities[digest]!)
-                    try transitionHook?("afterRename", digest)
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                    try queue.write { db in
-                        try CollectorSpoolGCJournal.setState(db, runID: approval.runID, digest: digest, from: "quarantinePrepared", to: "quarantined", now: work.now)
-                        try db.execute(sql: "UPDATE collector_gc_runs SET state='quarantined',hold_until=MAX(hold_until,?) WHERE run_id=?",
-                            arguments: [work.now + approval.holdSeconds, approval.runID])
-                    }
-                    try transitionHook?("quarantined", digest)
-                    report.objects += 1
-                }
                 try verifyProtected(checked, work: work)
-                _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                report.freeBytesAfter = try files.availableBytes()
-                return report
-            } catch is SimulatedCrash { throw SimulatedCrash() }
-            catch {
-                try restoreIncomplete(queue, runID: approval.runID, now: work.now)
-                throw error
+                var selected: [String] = [], identities: [String: CollectorSpoolGCFiles.Identity] = [:]
+                for digest in checked.candidates {
+                    try work.charge()
+                    let size = graph.sizes[digest]!
+                    guard selected.count < approval.maxObjects, size <= approval.maxBytes - report.uniqueRawBytes else { continue }
+                    guard let identity = try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size,
+                        consume: { try work.charge(Int64($0.count)) }) else { continue }
+                    if let row = try queue.read({ try CollectorSpoolGCJournal.residency($0, digest) }), (row["state"] as String) != "resident" {
+                        throw CollectorSpoolGCError.scopeChanged
+                    }
+                    selected.append(digest); identities[digest] = identity
+                    report.uniqueRawBytes += size; report.allocatedBytesObserved += identity.allocatedBytes
+                }
+                guard !selected.isEmpty else { return report }
+                try verifyProof(queue, approval, checked: checked, digests: selected, paths: [:], settingsURL: settingsURL, work: work)
+                report.freeBytesBefore = try files.availableBytes()
+                guard report.freeBytesBefore >= max(64 * 1024 * 1024, checked.config.budgets.minimumFreeDiskBytes) else {
+                    throw CollectorSpoolGCError.budgetExceeded
+                }
+                let bytes = try approval.bytes(), approvalHash = ArchiveV2Hash.sha256(bytes)
+                try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                try queue.write { db in
+                    try db.execute(sql: """
+                        INSERT INTO collector_gc_runs(run_id,machine_id,scope_hash,approval_hash,evidence_bytes,state,created_at,hold_until,max_bytes,max_objects,reserved_bytes,reserved_objects)
+                        VALUES (?,?,?,?,?,'prepared',?,?,?,?,?,?)
+                        """, arguments: [approval.runID, approval.machineID, approval.scopeSHA256, approvalHash, bytes,
+                            work.now, work.now + approval.holdSeconds, approval.maxBytes, approval.maxObjects, report.uniqueRawBytes, selected.count])
+                    for digest in selected {
+                        let generation = try CollectorSpoolGCJournal.residency(db, digest).map { ($0["generation"] as Int64) } ?? 0
+                        guard generation < Int64.max else { throw CollectorSpoolGCError.budgetExceeded }
+                        let path = try CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID)
+                        try db.execute(sql: """
+                            INSERT INTO collector_gc_objects(run_id,digest,raw_bytes,reference_hash,quarantine_path,identity_bytes,state,residency_generation,verified_at)
+                            VALUES (?,?,?,?,?,?,'quarantinePrepared',?,?)
+                            """, arguments: [approval.runID, digest, graph.sizes[digest]!, try Self.referenceHash(digest, snapshot: checked.snapshot), path,
+                                try ArchiveCanonicalJSON.encode(identities[digest]!), generation + 1, work.now])
+                        try db.execute(sql: """
+                            INSERT INTO collector_spool_object_residency(digest,raw_bytes,state,run_id,quarantine_path,evidence_hash,verified_at,generation)
+                            VALUES (?,?,'quarantinePrepared',?,?,?,?,?) ON CONFLICT(digest) DO UPDATE SET
+                            raw_bytes=excluded.raw_bytes,state=excluded.state,run_id=excluded.run_id,quarantine_path=excluded.quarantine_path,
+                            evidence_hash=excluded.evidence_hash,verified_at=excluded.verified_at,generation=excluded.generation
+                            """, arguments: [digest, graph.sizes[digest]!, approval.runID, path, approvalHash, work.now, generation + 1])
+                    }
+                }
+                do {
+                    try transitionHook?("reserved", "")
+                    for digest in selected {
+                        try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                        try transitionHook?("beforeRename", digest)
+                        try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                        try files.move(CollectorSpoolGCFiles.resident(digest), to: CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID), digest: digest, expected: identities[digest]!)
+                        try transitionHook?("afterRename", digest)
+                        try recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                        try queue.write { db in
+                            try CollectorSpoolGCJournal.setState(db, runID: approval.runID, digest: digest, from: "quarantinePrepared", to: "quarantined", now: work.now)
+                            try db.execute(sql: "UPDATE collector_gc_runs SET state='quarantined',hold_until=MAX(hold_until,?) WHERE run_id=?",
+                                arguments: [work.now + approval.holdSeconds, approval.runID])
+                        }
+                        try transitionHook?("quarantined", digest)
+                        report.objects += 1
+                    }
+                    try verifyProtected(checked, work: work)
+                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
+                    report.freeBytesAfter = try files.availableBytes()
+                    return report
+                } catch is SimulatedCrash { throw SimulatedCrash() }
+                catch {
+                    try restoreIncomplete(queue, runID: approval.runID, now: work.now)
+                    throw error
+                }
             }
         }
     }
@@ -371,88 +529,97 @@ extension CollectorSpoolGCSession {
                 throw CollectorSpoolGCError.unknownRun
             }
             guard work.now >= (run["hold_until"] as Int64) else { throw CollectorSpoolGCError.holdNotElapsed }
-            let checked: Checked
-            do { checked = try check(queue, approval: approval, settingsURL: settingsURL, work: work) }
-            catch let error as CollectorSpoolGCError where error == .scopeChanged || error == .privacyWithheld {
-                try restoreIncomplete(queue, runID: approval.runID, now: work.now)
-                throw error
-            }
-            guard let graph = checked.snapshot.graph else { throw CollectorSpoolGCError.spoolIntegrityBlocked }
-            var report = ExecutionReport(runID: approval.runID, action: "finalize")
-            try measure(queue, checked: checked, report: &report, work: work)
-            var selected: [Row] = [], paths: [String: String] = [:]
-            for row in try queue.read({ try CollectorSpoolGCJournal.rows($0, runID: approval.runID) }) {
-                let state: String = row["state"], digest: String = row["digest"]
-                if state == "cancelled" || state == "evicted" { continue }
-                guard state == "quarantined" else { throw CollectorSpoolGCError.scopeChanged }
-                let residency = try queue.read { try CollectorSpoolGCJournal.residency($0, digest) }
-                guard let residency, (residency["generation"] as Int64) == (row["residency_generation"] as Int64),
-                      (residency["run_id"] as String) == approval.runID, (residency["state"] as String) == "quarantined" else {
-                    throw CollectorSpoolGCError.scopeChanged
-                }
-                if try !checked.candidates.contains(digest) || Self.referenceHash(digest, snapshot: checked.snapshot) != (row["reference_hash"] as String) {
-                    try restoreRow(queue, row: row, now: work.now); report.restoredObjects += 1; continue
-                }
-                let size: Int64 = row["raw_bytes"]
-                guard size == graph.sizes[digest], size <= approval.maxBytes - report.uniqueRawBytes, selected.count < approval.maxObjects else {
-                    throw CollectorSpoolGCError.budgetExceeded
-                }
-                selected.append(row); paths[digest] = row["quarantine_path"]; report.uniqueRawBytes += size
-            }
-            let finalizedCount = try queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_gc_objects WHERE run_id=? AND state='evicted'", arguments: [approval.runID]) ?? 0 }
-            guard (run["finalized_bytes"] as Int64) <= approval.maxBytes,
-                  report.uniqueRawBytes <= approval.maxBytes - (run["finalized_bytes"] as Int64),
-                  finalizedCount <= approval.maxObjects, selected.count <= approval.maxObjects - finalizedCount,
-                  report.uniqueRawBytes <= (run["reserved_bytes"] as Int64), selected.count <= (run["reserved_objects"] as Int) else {
-                throw CollectorSpoolGCError.budgetExceeded
-            }
-            try verifyProtected(checked, work: work)
-            guard !selected.isEmpty else { return report }
-            do {
-                try verifyProof(queue, approval, checked: checked, digests: selected.map { $0["digest"] }, paths: paths, settingsURL: settingsURL, work: work)
-            } catch let error as CollectorSpoolGCError where error == .privacyWithheld {
-                try restoreIncomplete(queue, runID: approval.runID, now: work.now)
-                throw error
-            }
-            let bytes = try approval.bytes(), hash = ArchiveV2Hash.sha256(bytes)
-            report.freeBytesBefore = try files.availableBytes()
-            guard report.freeBytesBefore >= max(64 * 1024 * 1024, checked.config.budgets.minimumFreeDiskBytes) else { throw CollectorSpoolGCError.budgetExceeded }
-            do {
-                for row in selected {
-                    let digest: String = row["digest"], size: Int64 = row["raw_bytes"], path: String = row["quarantine_path"]
-                    guard try path == CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID),
-                          let identity = try files.verify(path, digest: digest, bytes: size, consume: { try work.charge(Int64($0.count)) }),
-                          identity == (try ArchiveCanonicalJSON.decode(CollectorSpoolGCFiles.Identity.self, from: row["identity_bytes"])) else {
-                        throw CollectorSpoolGCError.scopeChanged
+            let openWatch: () throws -> ExecutionReport = {
+                try self.withScopeWatch(queue) { watch in
+                    let checked: Checked
+                    do { checked = try watch.checkWithBaseline(self, queue: queue, approval: approval, settingsURL: settingsURL, work: work) }
+                    catch let error as CollectorSpoolGCError where error == .scopeChanged || error == .privacyWithheld {
+                        try self.restoreIncomplete(queue, runID: approval.runID, now: work.now)
+                        throw error
                     }
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                    try queue.write { db in
-                        try CollectorSpoolGCJournal.setState(db, runID: approval.runID, digest: digest, from: "quarantined", to: "unlinkPrepared", now: work.now)
-                        try db.execute(sql: "UPDATE collector_gc_objects SET unlink_approval_hash=?,unlink_evidence_bytes=? WHERE run_id=? AND digest=?",
-                            arguments: [hash, bytes, approval.runID, digest])
-                    }
-                    try transitionHook?("unlinkPrepared", digest)
-                    try files.finalizeUnlink(path, digest: digest, expected: identity) {
-                        _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                        try queue.read { db in
-                            guard let resident = try CollectorSpoolGCJournal.residency(db, digest),
-                                  (resident["state"] as String) == "unlinkPrepared", (resident["run_id"] as String) == approval.runID,
-                                  (resident["generation"] as Int64) == (row["residency_generation"] as Int64),
-                                  try String.fetchOne(db, sql: "SELECT unlink_approval_hash FROM collector_gc_objects WHERE run_id=? AND digest=? AND state='unlinkPrepared'",
-                                    arguments: [approval.runID, digest]) == hash else { throw CollectorSpoolGCError.scopeChanged }
+                    guard let graph = checked.snapshot.graph else { throw CollectorSpoolGCError.spoolIntegrityBlocked }
+                    var report = ExecutionReport(runID: approval.runID, action: "finalize")
+                    try self.measure(queue, checked: checked, report: &report, work: work)
+                    var selected: [Row] = [], paths: [String: String] = [:]
+                    for row in try queue.read({ try CollectorSpoolGCJournal.rows($0, runID: approval.runID) }) {
+                        let state: String = row["state"], digest: String = row["digest"]
+                        if state == "cancelled" || state == "evicted" { continue }
+                        guard state == "quarantined" else { throw CollectorSpoolGCError.scopeChanged }
+                        let residency = try queue.read { try CollectorSpoolGCJournal.residency($0, digest) }
+                        guard let residency, (residency["generation"] as Int64) == (row["residency_generation"] as Int64),
+                              (residency["run_id"] as String) == approval.runID, (residency["state"] as String) == "quarantined" else {
+                            throw CollectorSpoolGCError.scopeChanged
                         }
+                        if try !checked.candidates.contains(digest) || Self.referenceHash(digest, snapshot: checked.snapshot) != (row["reference_hash"] as String) {
+                            try self.restoreRow(queue, row: row, now: work.now); report.restoredObjects += 1; continue
+                        }
+                        let size: Int64 = row["raw_bytes"]
+                        guard size == graph.sizes[digest], size <= approval.maxBytes - report.uniqueRawBytes, selected.count < approval.maxObjects else {
+                            throw CollectorSpoolGCError.budgetExceeded
+                        }
+                        selected.append(row); paths[digest] = row["quarantine_path"]; report.uniqueRawBytes += size
                     }
-                    try transitionHook?("afterUnlink", digest)
-                    try completeEviction(queue, runID: approval.runID, digest: digest, bytes: size, now: work.now)
-                    report.objects += 1; report.allocatedBytesObserved += identity.allocatedBytes
-                    _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
-                    try transitionHook?("evicted", digest)
+                    let finalizedCount = try queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_gc_objects WHERE run_id=? AND state='evicted'", arguments: [approval.runID]) ?? 0 }
+                    guard (run["finalized_bytes"] as Int64) <= approval.maxBytes,
+                          report.uniqueRawBytes <= approval.maxBytes - (run["finalized_bytes"] as Int64),
+                          finalizedCount <= approval.maxObjects, selected.count <= approval.maxObjects - finalizedCount,
+                          report.uniqueRawBytes <= (run["reserved_bytes"] as Int64), selected.count <= (run["reserved_objects"] as Int) else {
+                        throw CollectorSpoolGCError.budgetExceeded
+                    }
+                    try self.verifyProtected(checked, work: work)
+                    guard !selected.isEmpty else { return report }
+                    do {
+                        try self.verifyProof(queue, approval, checked: checked, digests: selected.map { $0["digest"] }, paths: paths, settingsURL: settingsURL, work: work)
+                    } catch let error as CollectorSpoolGCError where error == .privacyWithheld {
+                        try self.restoreIncomplete(queue, runID: approval.runID, now: work.now)
+                        throw error
+                    }
+                    let bytes = try approval.bytes(), hash = ArchiveV2Hash.sha256(bytes)
+                    report.freeBytesBefore = try self.files.availableBytes()
+                    guard report.freeBytesBefore >= max(64 * 1024 * 1024, checked.config.budgets.minimumFreeDiskBytes) else { throw CollectorSpoolGCError.budgetExceeded }
+                    do {
+                        for row in selected {
+                            let digest: String = row["digest"], size: Int64 = row["raw_bytes"], path: String = row["quarantine_path"]
+                            guard try path == CollectorSpoolGCFiles.quarantine(digest, runID: approval.runID),
+                                  let identity = try self.files.verify(path, digest: digest, bytes: size, consume: { try work.charge(Int64($0.count)) }),
+                                  identity == (try ArchiveCanonicalJSON.decode(CollectorSpoolGCFiles.Identity.self, from: row["identity_bytes"])) else {
+                                throw CollectorSpoolGCError.scopeChanged
+                            }
+                            try self.recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                            try queue.write { db in
+                                try CollectorSpoolGCJournal.setState(db, runID: approval.runID, digest: digest, from: "quarantined", to: "unlinkPrepared", now: work.now)
+                                try db.execute(sql: "UPDATE collector_gc_objects SET unlink_approval_hash=?,unlink_evidence_bytes=? WHERE run_id=? AND digest=?",
+                                    arguments: [hash, bytes, approval.runID, digest])
+                            }
+                            try self.transitionHook?("unlinkPrepared", digest)
+                            try self.files.finalizeUnlink(path, digest: digest, expected: identity) {
+                                try self.recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                                try queue.read { db in
+                                    guard let resident = try CollectorSpoolGCJournal.residency(db, digest),
+                                          (resident["state"] as String) == "unlinkPrepared", (resident["run_id"] as String) == approval.runID,
+                                          (resident["generation"] as Int64) == (row["residency_generation"] as Int64),
+                                          try String.fetchOne(db, sql: "SELECT unlink_approval_hash FROM collector_gc_objects WHERE run_id=? AND digest=? AND state='unlinkPrepared'",
+                                            arguments: [approval.runID, digest]) == hash else { throw CollectorSpoolGCError.scopeChanged }
+                                }
+                            }
+                            try self.transitionHook?("afterUnlink", digest)
+                            try self.completeEviction(queue, runID: approval.runID, digest: digest, bytes: size, now: work.now)
+                            report.objects += 1; report.allocatedBytesObserved += identity.allocatedBytes
+                            try self.recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
+                            try self.transitionHook?("evicted", digest)
+                        }
+                        try self.verifyProtected(checked, work: work)
+                        report.freeBytesAfter = try self.files.availableBytes()
+                        return report
+                    } catch is SimulatedCrash { throw SimulatedCrash() }
+                    catch {
+                        try self.restoreIncomplete(queue, runID: approval.runID, now: work.now)
+                        throw error
+                    }
                 }
-                try verifyProtected(checked, work: work)
-                report.freeBytesAfter = try files.availableBytes()
-                return report
-            } catch is SimulatedCrash { throw SimulatedCrash() }
-            catch {
+            }
+            do { return try openWatch() }
+            catch let error as CollectorSpoolGCError where error == .scopeChanged {
                 try restoreIncomplete(queue, runID: approval.runID, now: work.now)
                 throw error
             }
