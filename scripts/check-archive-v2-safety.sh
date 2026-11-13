@@ -227,7 +227,7 @@ const reviewedFunctions = [
   ['macos/EngramCoreWrite/CaptureIngest/CaptureIngestReplay.swift', 'cleanup', '22c9d3889e6cc4ea7070cc1a53aada82790b22adeeb31331c7d8946c1f6a12e7'],
   ['macos/EngramCoreWrite/CaptureIngest/CaptureIngestReplay.swift', 'removeContents', '3e0749b753e59c1ed3e2a495f6e5043e580f19f83b825b8e1bb427c8a90abfeb'],
   ['macos/EngramCollectorCore/CollectorSpoolGCFiles.swift', 'finalizeUnlink', 'a8218d00ee1332037e93d29fe2f64030a3efa3cea060b119b59c70ffca1a27f1'],
-  ['macos/EngramCollectorCore/CollectorSpoolGCExecutor.swift', 'finalize', '124ae7e649661b4ba657e71d4ad69e8af474040354e685509f81bca35104661f'],
+  ['macos/EngramCollectorCore/CollectorSpoolGCExecutor.swift', 'finalize', '3c3bd23f1369326cd04f215f62ab8da83ad9d3306a72150f0293defffc69f821'],
   ['macos/EngramCoreWrite/ArchiveV2/ArchiveCASEvictor.swift', 'evictEligibleObjects', '154b243fbeb3c27671f57bd18135c17e709ee611efc81d8d2848bccef3deb65f'],
 ];
 function reviewedCall(path, source, index) {
