@@ -46,6 +46,7 @@ struct CollectorSpoolGCApproval: Codable {
     var maxObjects: Int
     var holdSeconds: Int64
     var legacyAbsentReferenceSHA256: String? = nil
+    var selectedDigests: [String]? = nil
     var central: CollectorSpoolGCPreview.Evidence
     var replicas: [Replica]
     var escrow: Escrow
@@ -75,7 +76,8 @@ struct CollectorSpoolGCApproval: Codable {
               createdAt <= now, freshAt <= now, now - freshAt <= 300,
               expiresAt >= now, expiresAt - createdAt <= 30 * 86400,
               [scopeSHA256, configurationSHA256, policySHA256, nativeSHA256].allSatisfy(ArchiveV2Hash.isValidSHA256),
-              legacyAbsentReferenceSHA256.map(ArchiveV2Hash.isValidSHA256) ?? true
+              legacyAbsentReferenceSHA256.map(ArchiveV2Hash.isValidSHA256) ?? true,
+              selectedDigests.map({ !$0.isEmpty && $0.count <= maxObjects && $0 == Set($0).sorted() && $0.allSatisfy(ArchiveV2Hash.isValidSHA256) }) ?? true
         else { throw CollectorSpoolGCError.invalidEvidence }
         guard replicas.count == 2, Set(replicas.map(\.serverID)) == ["hq", "m1"],
               Set(replicas.map(\.physicalHostID)).count == 2, Set(replicas.map(\.storeIdentity)).count == 2,

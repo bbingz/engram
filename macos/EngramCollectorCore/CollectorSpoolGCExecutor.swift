@@ -231,7 +231,14 @@ extension CollectorSpoolGCSession {
             return Checked(snapshot: current, config: config, captures: [], candidates: [])
         }
         let candidates = try actionableCandidates(queue, snapshot: current, work: work)
-        let captures = Set(candidates.flatMap { graph.refs[$0]! })
+        let targetDigests: [String]
+        if let explicit = approval.selectedDigests {
+            guard Set(explicit).isSubset(of: Set(candidates)) else { throw CollectorSpoolGCError.scopeChanged }
+            targetDigests = explicit
+        } else {
+            targetDigests = candidates
+        }
+        let captures = Set(targetDigests.flatMap { graph.refs[$0]! })
         do {
             guard try nativeHash(queue, snapshot: current, config: config, captures: captures) == approval.nativeSHA256 else {
                 throw CollectorSpoolGCError.scopeChanged
@@ -512,17 +519,28 @@ extension CollectorSpoolGCSession {
                 report.legacyAbsentProtectedObjects = legacyBefore.objects
                 report.legacyAbsentProtectedBytes = legacyBefore.bytes
                 var selected: [String] = [], identities: [String: CollectorSpoolGCFiles.Identity] = [:]
-                for digest in checked.candidates {
+                let explicitTargets = approval.selectedDigests.map(Set.init)
+                let orderedCandidates = explicitTargets.map { set in checked.candidates.filter { set.contains($0) } } ?? checked.candidates
+                for digest in orderedCandidates {
                     try work.charge()
                     let size = graph.sizes[digest]!
-                    guard selected.count < approval.maxObjects, size <= approval.maxBytes - report.uniqueRawBytes else { continue }
+                    guard selected.count < approval.maxObjects, size <= approval.maxBytes - report.uniqueRawBytes else {
+                        if explicitTargets != nil { throw CollectorSpoolGCError.scopeChanged }
+                        continue
+                    }
                     guard let identity = try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size,
-                        consume: { try work.charge(Int64($0.count)) }) else { continue }
+                        consume: { try work.charge(Int64($0.count)) }) else {
+                        if explicitTargets != nil { throw CollectorSpoolGCError.scopeChanged }
+                        continue
+                    }
                     if let row = try queue.read({ try CollectorSpoolGCJournal.residency($0, digest) }), (row["state"] as String) != "resident" {
                         throw CollectorSpoolGCError.scopeChanged
                     }
                     selected.append(digest); identities[digest] = identity
                     report.uniqueRawBytes += size; report.allocatedBytesObserved += identity.allocatedBytes
+                }
+                if let explicitTargets, selected.count != explicitTargets.count {
+                    throw CollectorSpoolGCError.scopeChanged
                 }
                 guard !selected.isEmpty else { return report }
                 try verifyProof(queue, approval, checked: checked, digests: selected, paths: [:], settingsURL: settingsURL, work: work)
