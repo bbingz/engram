@@ -303,12 +303,13 @@ final class GCPreviewFixture {
 
     func add(_ name: String, bytes text: String, latest: Bool = false, published: Bool = true,
              revision: Int = 1, state: String = "acknowledged", error: String = "", dirty: Bool = false,
-             centralStatus: String = "index_ready", centralFailure: String = "", nativeGeneration: ArchiveSourceGeneration? = nil) throws {
+             centralStatus: String = "index_ready", centralFailure: String = "",
+             nativeGeneration: ArchiveSourceGeneration? = nil, locatorPath: String = "stream") throws {
         sequence += 1
         let bytes = Data(text.utf8), digest = ArchiveV2Hash.sha256(bytes)
         let id = ArchiveV2Hash.sha256(Data(name.utf8))
         let generation = try nativeGeneration ?? ArchiveSourceGeneration(device: 1, inode: sequence, size: Int64(bytes.count), mtimeNs: sequence, ctimeNs: sequence, mode: 0o100600)
-        let manifest = try ArchiveSourceManifest(captureID: id, machineID: Self.machine, source: "codex", locator: nativeRoot + "/stream", sessionID: nil,
+        let manifest = try ArchiveSourceManifest(captureID: id, machineID: Self.machine, source: "codex", locator: nativeRoot + "/" + locatorPath, sessionID: nil,
             capturedAt: "2026-11-11T00:00:00.000Z", generation: generation, wholeSourceSHA256: digest, rawByteCount: Int64(bytes.count),
             chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: digest, rawByteCount: Int64(bytes.count))],
             replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["source.jsonl"]))
@@ -318,19 +319,19 @@ final class GCPreviewFixture {
         _ = try cas.publishObject(raw: bytes, expectedSHA256: digest)
         _ = try cas.publishManifest(manifestBytes, expectedSHA256: capture.unboundManifestSHA256)
         guard published else { return }
-        let publicationSequence = latest ? 100_000 : sequence
+        let publicationSequence = latest ? (locatorPath == "stream" ? 100_000 : 100_000 + sequence) : sequence
         let pub = try CollectorPublicationEnvelope(machineID: Self.machine, sourceInstanceID: Self.instance, collectorEpoch: Self.epoch, sequence: publicationSequence, manifestSHA256: capture.unboundManifestSHA256)
         let pubBytes = try ArchiveCanonicalJSON.encode(pub), pubDigest = try pub.sha256()
         try inventory!.write { db in
             try db.execute(sql: "INSERT INTO collector_publications VALUES (?, ?, 'root', ?, ?, ?, ?, ?, ?, ?)",
-                arguments: [pubDigest, id, revision, "stream", Self.instance, Self.epoch, publicationSequence, capture.unboundManifestSHA256, pubBytes])
+                arguments: [pubDigest, id, revision, locatorPath, Self.instance, Self.epoch, publicationSequence, capture.unboundManifestSHA256, pubBytes])
             try db.execute(sql: """
                 INSERT INTO collector_locators(root_id,root_revision,relative_path,dirty_revision,acknowledged_revision,last_capture_id,claim_generation,last_error)
-                VALUES ('root',?,'stream',2,?,?,0,?) ON CONFLICT(root_id,root_revision,relative_path) DO UPDATE SET
+                VALUES ('root',?,?,2,?,?,0,?) ON CONFLICT(root_id,root_revision,relative_path) DO UPDATE SET
                 last_capture_id=COALESCE(excluded.last_capture_id,collector_locators.last_capture_id),
                 acknowledged_revision=MIN(excluded.acknowledged_revision,collector_locators.acknowledged_revision),
                 last_error=COALESCE(excluded.last_error,collector_locators.last_error)
-                """, arguments: [revision, dirty ? 1 : 2, latest ? id : nil, dirty ? "recaptureCooldown" : nil])
+                """, arguments: [revision, locatorPath, dirty ? 1 : 2, latest ? id : nil, dirty ? "recaptureCooldown" : nil])
             for replica in ["hq", "m1"] {
                 let ack = try CollectorPublicationACK(serverID: replica, journalID: Self.epoch, arrivalOrdinal: sequence,
                     publicationSHA256: pubDigest, manifestSHA256: capture.unboundManifestSHA256, storedAt: "2026-11-11T00:00:00.000Z")

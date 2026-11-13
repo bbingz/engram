@@ -121,10 +121,13 @@ final class CollectorSpoolGCSession: @unchecked Sendable {
             var legacy = Data()
             let journalDigests = Set(journal.map { $0["digest"] as String })
             if let graph = initial.graph {
+                let residencyByDigest: [String: Row] = try queue.read { db in
+                    Dictionary(uniqueKeysWithValues: try Row.fetchAll(db, sql: "SELECT * FROM collector_spool_object_residency").map { ($0["digest"] as String, $0) })
+                }
                 for digest in graph.refs.keys.sorted() {
                     try work.charge()
                     let size = graph.sizes[digest]!, refs = graph.refs[digest]!
-                    let state = try queue.read { try CollectorSpoolGCJournal.residency($0, digest) }
+                    let state = residencyByDigest[digest]
                     let tracked = state != nil || journalDigests.contains(digest)
                     // Only GC-owned loss can fail whole-spool admission. Untracked
                     // loss remains the base reader/publication's responsibility.

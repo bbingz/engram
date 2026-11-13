@@ -510,6 +510,109 @@ final class CollectorSpoolGCExecutorTests: XCTestCase {
             }
         }
     }
+
+    func testApprovalBoundLegacyAbsentProtectedAndVanishedLegacyCandidatePermitCleanBatchOnly_repro() throws {
+        let f = try GCExecutionFixture(); defer { f.remove() }
+        let root = CollectorRootConfiguration(rootID: "root", source: .codex, rootPath: f.seed.nativeRoot, revision: 1)
+        let liveOtherText = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"live-other\",\"cwd\":\"/allowed\"}}\n"
+        let legacyOldText = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"legacy-old\",\"cwd\":\"/allowed\"}}\n"
+        let legacyHeadText = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"legacy-head\",\"cwd\":\"/allowed\"}}\n"
+        try Data(GCExecutionFixture.headText.utf8).write(to: URL(fileURLWithPath: f.seed.nativeRoot).appendingPathComponent("stream"))
+        try Data(liveOtherText.utf8).write(to: URL(fileURLWithPath: f.seed.nativeRoot).appendingPathComponent("live-other"))
+        let streamGen = try CollectorPublicationWorker.sourceGeneration(root: root, relativePath: "stream")
+        let liveOtherGen = try CollectorPublicationWorker.sourceGeneration(root: root, relativePath: "live-other")
+
+        try f.seed.add("old", bytes: GCExecutionFixture.oldText, locatorPath: "stream")
+        try f.seed.add("head", bytes: GCExecutionFixture.headText, latest: true, nativeGeneration: streamGen, locatorPath: "stream")
+        try f.seed.add("live-other-head", bytes: liveOtherText, latest: true, nativeGeneration: liveOtherGen, locatorPath: "live-other")
+        // Pre-existing 11-09/10 style untracked dual-ACKed absences on both a kept head and a vanished-head candidate.
+        try f.seed.add("legacy-old", bytes: legacyOldText, locatorPath: "vanished-legacy")
+        try f.seed.add("legacy-head", bytes: legacyHeadText, latest: true, locatorPath: "vanished-legacy")
+        try FileManager.default.removeItem(at: f.seed.object(GCExecutionFixture.headText))
+        try FileManager.default.removeItem(at: f.seed.object(legacyOldText))
+        try FileManager.default.removeItem(at: f.seed.object(legacyHeadText))
+
+        try f.open()
+        let opened = try CollectorPOSIXDirectoryAccess.openAbsolute(components: CollectorPOSIXDirectoryAccess.components(f.seed.nativeRoot))
+        defer { close(opened.descriptor) }
+        let id = try CollectorPOSIXDirectoryAccess.identity(opened.info)
+        let epoch = try CollectorNativeEventStream.currentEpoch(binding: .init(configuration: root, expectedIdentity: id))
+        try f.owner!.withSpoolGC { queue in
+            try queue.write { db in
+                try db.execute(sql: "UPDATE collector_roots SET event_epoch=?,event_cursor='1'", arguments: [epoch])
+                try db.execute(sql: "INSERT INTO collector_streams(root_id,root_revision,effective_source,source_instance_id,collector_epoch,last_sequence) VALUES ('root',1,'codex',?,?,100100)", arguments: [GCPreviewFixture.instance, GCPreviewFixture.epoch])
+                try db.execute(sql: "INSERT INTO collector_root_bindings(root_id,root_revision,device,inode,generation,birth_seconds,birth_nanoseconds) VALUES ('root',1,?,?,?,?,?)",
+                    arguments: [id.device, id.inode, Int64(id.generation), id.birthSeconds, id.birthNanoseconds])
+                try db.execute(sql: "UPDATE collector_locators SET observed_generation=? WHERE relative_path='stream'",
+                    arguments: ["stat-v1:" + String(decoding: try ArchiveCanonicalJSON.encode(streamGen), as: UTF8.self)])
+                try db.execute(sql: "UPDATE collector_locators SET observed_generation=? WHERE relative_path='live-other'",
+                    arguments: ["stat-v1:" + String(decoding: try ArchiveCanonicalJSON.encode(liveOtherGen), as: UTF8.self)])
+            }
+        }
+        let document: [String: Any] = ["runtimeRole": "collector", "collector": [
+            "enabled": true, "shadowRoot": f.seed.root.path, "identityCatalog": f.identity.path,
+            "roots": [["rootID": "root", "source": "codex", "rootPath": f.seed.nativeRoot, "revision": 1]],
+            "replicas": ["hq", "m1"].map { ["serverID": $0, "baseURL": "https://\($0).invalid", "credentialID": "\($0)-test"] },
+            "privacy": ["revision": 1, "excludedProjectRoots": []],
+            "budgets": ["maxEntriesVisited":8,"maxCandidateFiles":8,"maxDirectoryOpens":2,"maxMetadataBytes":8192,
+                "maxCaptureFiles":4,"maxCaptureBytes":1048576,"maxUploadClaimsPerReplica":2,"maxRecoveryCandidates":8,
+                "maxResponseBytes":4096,"minimumFreeDiskBytes":0,"maxIncomingPaths":64,"maxPathUTF8Bytes":4096,
+                "maxTotalPathUTF8Bytes":32768,"maxCheckpointUTF8Bytes":512,"maxQueuedBatches":16,
+                "maxQueuedUTF8Bytes":65536,"pollIntervalMilliseconds":50]]]
+        try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys]).write(to: f.settings)
+        XCTAssertEqual(chmod(f.settings.path, 0o600), 0)
+
+        var unapproved = try f.approval(bindLegacyAbsent: true)
+        unapproved.legacyAbsentReferenceSHA256 = nil
+        XCTAssertThrowsError(try f.session!.apply(approval: unapproved, settingsURL: f.settings, now: GCExecutionFixture.clock)) {
+            XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+        }
+        var mismatched = try f.approval(bindLegacyAbsent: true)
+        mismatched.legacyAbsentReferenceSHA256 = String(repeating: "a", count: 64)
+        XCTAssertThrowsError(try f.session!.apply(approval: mismatched, settingsURL: f.settings, now: GCExecutionFixture.clock)) {
+            XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+        }
+
+        // Mid-batch disappearance of a currently resident kept object must still abort and restore quarantine.
+        let midLossApproval = try f.approval(bindLegacyAbsent: true)
+        let liveOtherURL = f.seed.object(liveOtherText)
+        let savedLiveOther = try Data(contentsOf: liveOtherURL)
+        f.session!.transitionHook = { event, _ in
+            if event == "afterRename" { try FileManager.default.removeItem(at: liveOtherURL) }
+        }
+        XCTAssertThrowsError(try f.session!.apply(approval: midLossApproval, settingsURL: f.settings, now: GCExecutionFixture.clock)) {
+            XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+        }
+        f.session!.transitionHook = nil
+        XCTAssertEqual(try Data(contentsOf: f.seed.object(GCExecutionFixture.oldText)), Data(GCExecutionFixture.oldText.utf8))
+        try savedLiveOther.write(to: liveOtherURL)
+        XCTAssertEqual(chmod(liveOtherURL.path, 0o600), 0)
+
+        // Approved legacyAbsent reference hash permits clean quarantine + finalize without touching non-resident legacy objects.
+        let approved = try f.approval(bindLegacyAbsent: true)
+        XCTAssertNotNil(approved.legacyAbsentReferenceSHA256)
+        let applied = try f.session!.apply(approval: approved, settingsURL: f.settings, now: GCExecutionFixture.clock)
+        XCTAssertEqual(applied.objects, 1)
+        XCTAssertEqual(applied.legacyAbsentProtectedObjects, 2)
+
+        let later = GCExecutionFixture.clock + 14 * 86400 + 1
+        let ready = try f.approval(action: "finalize", runID: approved.runID, now: later, bindLegacyAbsent: true)
+        let finalized = try f.session!.finalize(approval: ready, settingsURL: f.settings, now: later)
+        XCTAssertEqual(finalized.objects, 1)
+        XCTAssertEqual(finalized.legacyAbsentProtectedObjects, 2)
+
+        // Any non-dual-ACKed missing kept object still fails closed and cannot obtain a legacyAbsent hash.
+        let legacyHeadID = ArchiveV2Hash.sha256(Data("legacy-head".utf8))
+        try f.owner!.withSpoolGC { queue in
+            try queue.write {
+                try $0.execute(sql: "UPDATE collector_publication_replicas SET state='pending',ack_bytes=NULL WHERE publication_digest IN (SELECT publication_digest FROM collector_publications WHERE capture_id=?)", arguments: [legacyHeadID])
+            }
+            let state = try f.session!.snapshot(queue)
+            XCTAssertThrowsError(try f.session!.legacyAbsentProtectedReferenceHash(queue, snapshot: state)) {
+                XCTAssertEqual($0 as? CollectorSpoolGCError, .spoolIntegrityBlocked)
+            }
+        }
+    }
 }
 
 extension GCExecutionFixture {
@@ -555,7 +658,7 @@ extension GCExecutionFixture {
     }
 
     func approval(action: String = "apply", runID: String = UUID().uuidString, now: Int64 = clock,
-                  maxBytes: Int64 = 1_048_576, maxObjects: Int = 128) throws -> CollectorSpoolGCApproval {
+                  maxBytes: Int64 = 1_048_576, maxObjects: Int = 128, bindLegacyAbsent: Bool = false) throws -> CollectorSpoolGCApproval {
         let session = session!, config = try session.configuration(settings)
         let loaded = try JSONDecoder().decode(CollectorSpoolGCPreview.Evidence.self, from: Data(contentsOf: seed.evidence))
         let central = CollectorSpoolGCPreview.Evidence(schemaVersion: 1,
@@ -563,8 +666,9 @@ extension GCExecutionFixture {
             parserRevision: loaded.parserRevision, publications: loaded.publications)
         return try owner!.withSpoolGC { queue in
             let state = try session.snapshot(queue, evidence: central), graph = try XCTUnwrap(state.graph)
-            let candidates = Set(graph.refs.keys).subtracting(graph.keep)
+            let candidates = try session.actionableCandidates(queue, snapshot: state)
             let captures = Set(candidates.flatMap { graph.refs[$0]! })
+            let legacyRef = bindLegacyAbsent ? try session.legacyAbsentProtectedReferenceHash(queue, snapshot: state) : nil
             let replicas = try ["hq", "m1"].map { server -> CollectorSpoolGCApproval.Replica in
                 var accepts: [String: String] = [:]
                 for pub in state.inventory.publications.values {
@@ -583,7 +687,7 @@ extension GCExecutionFixture {
                 configurationSHA256: ArchiveV2Hash.sha256(config.authorityBytes), policySHA256: try config.freshPolicy(at: settings).sha256(),
                 nativeSHA256: try session.nativeHash(queue, snapshot: state, config: config, captures: captures),
                 createdAt: now, expiresAt: now + 86400, freshAt: now, maxBytes: maxBytes, maxObjects: maxObjects,
-                holdSeconds: 14 * 86400, central: central, replicas: replicas,
+                holdSeconds: 14 * 86400, legacyAbsentReferenceSHA256: legacyRef, central: central, replicas: replicas,
                 escrow: .init(locationIdentity: "synthetic-private-escrow", protectedSetSHA256: try CollectorSpoolGCSession.protectedSetHash(state),
                     verifiedAt: now, expiresAt: now + 86400, pKeyEvidenceID: "test-key-drill", replicaRestoreDrillIDs: ["hq": "test-hq", "m1": "test-m1"],
                     objects: graph.keep.sorted(), manifests: manifests))

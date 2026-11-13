@@ -10,6 +10,8 @@ extension CollectorSpoolGCSession {
         var uniqueRawBytes: Int64 = 0
         var allocatedBytesObserved: Int64 = 0
         var restoredObjects = 0
+        var legacyAbsentProtectedObjects = 0
+        var legacyAbsentProtectedBytes: Int64 = 0
         var referencedLogicalBytes: Int64 = 0
         var uniquePresentCandidateBytes: Int64 = 0
         var keptBytes: Int64 = 0
@@ -48,6 +50,60 @@ extension CollectorSpoolGCSession {
         guard let refs = snapshot.graph?.refs[digest] else { throw CollectorSpoolGCError.scopeChanged }
         let publications = snapshot.inventory.publications.values.filter { refs.contains($0.captureID) }.map(\.digest).sorted()
         return ArchiveV2Hash.sha256(Data((refs.sorted().joined(separator: "\n") + "\n--publications--\n" + publications.joined(separator: "\n")).utf8))
+    }
+
+    func trackedDigests(_ queue: DatabaseQueue) throws -> Set<String> {
+        try queue.read { db in
+            var set = Set(try String.fetchAll(db, sql: "SELECT digest FROM collector_spool_object_residency"))
+            set.formUnion(try String.fetchAll(db, sql: "SELECT DISTINCT digest FROM collector_gc_objects"))
+            return set
+        }
+    }
+
+    func actionableCandidates(_ queue: DatabaseQueue, snapshot: Snapshot, work: Work? = nil) throws -> [String] {
+        guard let graph = snapshot.graph else { return [] }
+        let tracked = try trackedDigests(queue)
+        let sorted = Set(graph.refs.keys).subtracting(graph.keep).sorted { left, right in
+            let a = graph.refs[left]!.map { snapshot.catalog.captures[$0]!.manifest.capturedAt }.max()!
+            let b = graph.refs[right]!.map { snapshot.catalog.captures[$0]!.manifest.capturedAt }.max()!
+            return (a, left) < (b, right)
+        }
+        var result: [String] = []
+        result.reserveCapacity(sorted.count)
+        for digest in sorted {
+            try work?.charge()
+            if tracked.contains(digest) {
+                result.append(digest)
+            } else if try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: graph.sizes[digest]!, hash: false) != nil {
+                result.append(digest)
+            } else {
+                guard let refs = graph.refs[digest], !refs.isEmpty, refs.isSubset(of: graph.dualACKedCaptures) else {
+                    throw CollectorSpoolGCError.spoolIntegrityBlocked
+                }
+            }
+        }
+        return result
+    }
+
+    func legacyAbsentProtectedReferenceHash(_ queue: DatabaseQueue, snapshot: Snapshot, work: Work? = nil) throws -> String? {
+        guard let graph = snapshot.graph else { return nil }
+        let tracked = try trackedDigests(queue)
+        var legacy = Data()
+        var count = 0
+        for digest in graph.keep.sorted() {
+            try work?.charge()
+            let size = graph.sizes[digest]!
+            if try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size, hash: false) != nil {
+                continue
+            }
+            guard !tracked.contains(digest),
+                  let refs = graph.refs[digest], !refs.isEmpty, refs.isSubset(of: graph.dualACKedCaptures) else {
+                throw CollectorSpoolGCError.spoolIntegrityBlocked
+            }
+            count += 1
+            legacy.append(Data((digest + ":" + refs.sorted().joined(separator: ",") + "\n").utf8))
+        }
+        return count == 0 ? nil : ArchiveV2Hash.sha256(legacy)
     }
 
     func configuration(_ settingsURL: URL) throws -> CollectorRuntimeConfiguration {
@@ -174,11 +230,7 @@ extension CollectorSpoolGCSession {
         guard let graph = current.graph else {
             return Checked(snapshot: current, config: config, captures: [], candidates: [])
         }
-        let candidates = Set(graph.refs.keys).subtracting(graph.keep).sorted { left, right in
-            let a = graph.refs[left]!.map { current.catalog.captures[$0]!.manifest.capturedAt }.max()!
-            let b = graph.refs[right]!.map { current.catalog.captures[$0]!.manifest.capturedAt }.max()!
-            return (a, left) < (b, right)
-        }
+        let candidates = try actionableCandidates(queue, snapshot: current, work: work)
         let captures = Set(candidates.flatMap { graph.refs[$0]! })
         do {
             guard try nativeHash(queue, snapshot: current, config: config, captures: captures) == approval.nativeSHA256 else {
@@ -357,8 +409,9 @@ extension CollectorSpoolGCSession {
         report.existingQuarantineBytes = try sum(quarantine)
     }
 
-    func verifyProtected(_ checked: Checked, work: Work) throws {
-        guard let graph = checked.snapshot.graph else { return }
+    @discardableResult
+    func verifyProtected(_ queue: DatabaseQueue, _ checked: Checked, approval: CollectorSpoolGCApproval, work: Work) throws -> (objects: Int, bytes: Int64) {
+        guard let graph = checked.snapshot.graph else { return (0, 0) }
         // Verify every manifest file too, including unselected/unpublished captures.
         for capture in checked.snapshot.catalog.captures.values {
             let encoded = try ArchiveCanonicalJSON.encode(capture.manifest)
@@ -367,10 +420,31 @@ extension CollectorSpoolGCSession {
                 throw CollectorSpoolGCError.spoolIntegrityBlocked
             }
         }
+        let tracked = try trackedDigests(queue)
+        var legacy = Data()
+        var legacyObjects = 0
+        var legacyBytes: Int64 = 0
         for digest in graph.keep.sorted() {
-            guard try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: graph.sizes[digest]!,
-                consume: { try work.charge(Int64($0.count)) }) != nil else { throw CollectorSpoolGCError.spoolIntegrityBlocked }
+            let size = graph.sizes[digest]!
+            if try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size,
+                consume: { try work.charge(Int64($0.count)) }) != nil {
+                continue
+            }
+            guard !tracked.contains(digest),
+                  let refs = graph.refs[digest], !refs.isEmpty, refs.isSubset(of: graph.dualACKedCaptures) else {
+                throw CollectorSpoolGCError.spoolIntegrityBlocked
+            }
+            legacyObjects += 1
+            let sum = legacyBytes.addingReportingOverflow(size)
+            guard !sum.overflow else { throw CollectorSpoolGCError.budgetExceeded }
+            legacyBytes = sum.partialValue
+            legacy.append(Data((digest + ":" + refs.sorted().joined(separator: ",") + "\n").utf8))
         }
+        let actualHash = legacyObjects == 0 ? nil : ArchiveV2Hash.sha256(legacy)
+        guard actualHash == approval.legacyAbsentReferenceSHA256 else {
+            throw CollectorSpoolGCError.spoolIntegrityBlocked
+        }
+        return (legacyObjects, legacyBytes)
     }
 
     func verifyProof(_ queue: DatabaseQueue, _ approval: CollectorSpoolGCApproval, checked: Checked, digests: [String],
@@ -434,7 +508,9 @@ extension CollectorSpoolGCSession {
                 guard try queue.read({ try Int.fetchOne($0, sql: "SELECT count(*) FROM collector_gc_runs WHERE run_id=?", arguments: [approval.runID]) }) == 0 else {
                     throw CollectorSpoolGCError.scopeChanged
                 }
-                try verifyProtected(checked, work: work)
+                let legacyBefore = try verifyProtected(queue, checked, approval: approval, work: work)
+                report.legacyAbsentProtectedObjects = legacyBefore.objects
+                report.legacyAbsentProtectedBytes = legacyBefore.bytes
                 var selected: [String] = [], identities: [String: CollectorSpoolGCFiles.Identity] = [:]
                 for digest in checked.candidates {
                     try work.charge()
@@ -496,7 +572,7 @@ extension CollectorSpoolGCSession {
                         try transitionHook?("quarantined", digest)
                         report.objects += 1
                     }
-                    try verifyProtected(checked, work: work)
+                    try verifyProtected(queue, checked, approval: approval, work: work)
                     _ = try check(queue, approval: approval, settingsURL: settingsURL, work: work)
                     report.freeBytesAfter = try files.availableBytes()
                     return report
@@ -566,7 +642,9 @@ extension CollectorSpoolGCSession {
                           report.uniqueRawBytes <= (run["reserved_bytes"] as Int64), selected.count <= (run["reserved_objects"] as Int) else {
                         throw CollectorSpoolGCError.budgetExceeded
                     }
-                    try self.verifyProtected(checked, work: work)
+                    let legacyBefore = try self.verifyProtected(queue, checked, approval: approval, work: work)
+                    report.legacyAbsentProtectedObjects = legacyBefore.objects
+                    report.legacyAbsentProtectedBytes = legacyBefore.bytes
                     guard !selected.isEmpty else { return report }
                     do {
                         try self.verifyProof(queue, approval, checked: checked, digests: selected.map { $0["digest"] }, paths: paths, settingsURL: settingsURL, work: work)
@@ -608,7 +686,7 @@ extension CollectorSpoolGCSession {
                             try self.recheck(queue, watch: watch, checked: checked, approval: approval, settingsURL: settingsURL, work: work)
                             try self.transitionHook?("evicted", digest)
                         }
-                        try self.verifyProtected(checked, work: work)
+                        try self.verifyProtected(queue, checked, approval: approval, work: work)
                         report.freeBytesAfter = try self.files.availableBytes()
                         return report
                     } catch is SimulatedCrash { throw SimulatedCrash() }
