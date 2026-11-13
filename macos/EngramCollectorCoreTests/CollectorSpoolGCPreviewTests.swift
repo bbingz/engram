@@ -301,22 +301,29 @@ final class GCPreviewFixture {
         try inventory!.write { try $0.execute(sql: "UPDATE collector_roots SET completed_revision=requested_revision") }
     }
 
-    func add(_ name: String, bytes text: String, latest: Bool = false, published: Bool = true,
+    func add(_ name: String, bytes text: String, chunks chunkTexts: [String]? = nil, latest: Bool = false, published: Bool = true,
              revision: Int = 1, state: String = "acknowledged", error: String = "", dirty: Bool = false,
              centralStatus: String = "index_ready", centralFailure: String = "",
              nativeGeneration: ArchiveSourceGeneration? = nil, locatorPath: String = "stream") throws {
         sequence += 1
-        let bytes = Data(text.utf8), digest = ArchiveV2Hash.sha256(bytes)
+        let parts = chunkTexts ?? [text]
+        let partBytes = parts.map { Data($0.utf8) }
+        let bytes = partBytes.reduce(into: Data()) { $0.append($1) }, digest = ArchiveV2Hash.sha256(bytes)
         let id = ArchiveV2Hash.sha256(Data(name.utf8))
         let generation = try nativeGeneration ?? ArchiveSourceGeneration(device: 1, inode: sequence, size: Int64(bytes.count), mtimeNs: sequence, ctimeNs: sequence, mode: 0o100600)
+        let chunkRefs = try partBytes.enumerated().map { idx, raw in
+            try ArchiveChunkReference(ordinal: idx, rawSHA256: ArchiveV2Hash.sha256(raw), rawByteCount: Int64(raw.count))
+        }
         let manifest = try ArchiveSourceManifest(captureID: id, machineID: Self.machine, source: "codex", locator: nativeRoot + "/" + locatorPath, sessionID: nil,
             capturedAt: "2026-11-11T00:00:00.000Z", generation: generation, wholeSourceSHA256: digest, rawByteCount: Int64(bytes.count),
-            chunks: [ArchiveChunkReference(ordinal: 0, rawSHA256: digest, rawByteCount: Int64(bytes.count))],
+            chunks: chunkRefs,
             replayLayout: ArchiveReplayLayout(strategy: .singleFile, relativePaths: ["source.jsonl"]))
         let manifestBytes = try ArchiveCanonicalJSON.encode(manifest)
         let capture = try catalog!.recordCapture(canonicalManifestBytes: manifestBytes)
         let cas = try ImmutableArchiveCAS(root: root.appendingPathComponent("capture"))
-        _ = try cas.publishObject(raw: bytes, expectedSHA256: digest)
+        for raw in partBytes {
+            _ = try cas.publishObject(raw: raw, expectedSHA256: ArchiveV2Hash.sha256(raw))
+        }
         _ = try cas.publishManifest(manifestBytes, expectedSHA256: capture.unboundManifestSHA256)
         guard published else { return }
         let publicationSequence = latest ? (locatorPath == "stream" ? 100_000 : 100_000 + sequence) : sequence

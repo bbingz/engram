@@ -462,17 +462,26 @@ extension CollectorSpoolGCSession {
                      paths: [String: String], settingsURL: URL, work: Work) throws {
         let state = checked.snapshot, graph = state.graph!
         let captures = Set(digests.flatMap { graph.refs[$0] ?? [] })
-        let evicted = try queue.read { db in
-            Set(try String.fetchAll(db, sql: "SELECT digest FROM collector_spool_object_residency WHERE state='evicted'"))
+        let (evicted, quarantinedPaths) = try queue.read { db -> (Set<String>, [String: String]) in
+            let evictedSet = Set(try String.fetchAll(db, sql: "SELECT digest FROM collector_spool_object_residency WHERE state='evicted'"))
+            var qMap: [String: String] = [:]
+            for row in try Row.fetchAll(db, sql: """
+                SELECT digest, quarantine_path FROM collector_spool_object_residency
+                WHERE state IN ('quarantinePrepared','quarantined') AND quarantine_path IS NOT NULL
+                """) {
+                qMap[row["digest"]] = row["quarantine_path"]
+            }
+            return (evictedSet, qMap)
         }
         let cas = try ImmutableArchiveCAS(root: spoolRoot.appendingPathComponent("capture")).withCollectorVerificationRead { [self] digest, maximum in
             guard let size = graph.sizes[digest] else { throw CollectorSpoolGCError.spoolIntegrityBlocked }
             try work.charge(size)
-            if paths[digest] == nil, evicted.contains(digest),
+            let resolvedPath = try paths[digest] ?? quarantinedPaths[digest] ?? CollectorSpoolGCFiles.resident(digest)
+            if paths[digest] == nil, quarantinedPaths[digest] == nil, evicted.contains(digest),
                try files.verify(CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size, hash: false) == nil {
                 throw CollectorSpoolGCError.spoolRestoreRequired
             }
-            return try files.read(paths[digest] ?? CollectorSpoolGCFiles.resident(digest), digest: digest, bytes: size, maximumBytes: maximum)
+            return try files.read(resolvedPath, digest: digest, bytes: size, maximumBytes: maximum)
         }
         let policy = try checked.config.freshPolicy(at: settingsURL)
         let pubsByCapture = Dictionary(grouping: state.inventory.publications.values, by: \.captureID)
